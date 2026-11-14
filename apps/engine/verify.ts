@@ -52,9 +52,11 @@ const q = await view<number | null>("quote", { band_lo: lo, band_hi: hi, window_
 if (!q) throw new Error("gap unplaceable");
 const before = await view<number>("balance", { account_id: ID });
 console.log(`trading $0.10 on gap ${lo}..${hi}, window ${win} at ~${(q / 1e4).toFixed(2)}x (balance ${(before / 1000).toFixed(3)})`);
-await call("place", { band_lo: lo, band_hi: hi, window_idx: win, min_quote_bps: Math.floor(q * 0.8), stake: 100 });
-
-const [pos] = await view<Position[]>("positions", { account_id: ID });
+const placed = await call("place", { band_lo: lo, band_hi: hi, window_idx: win, min_quote_bps: Math.floor(q * 0.6), stake: 100 });
+// The id `place` returned; then wait for an RPC node that has seen it (public RPC is load-balanced).
+const id = JSON.parse(Buffer.from((placed.status as { SuccessValue: string }).SuccessValue, "base64").toString()) as number;
+let pos: Position | undefined;
+while (!(pos = (await view<Position[]>("positions", { account_id: ID })).find((p) => p.id === id))) await sleep(500);
 console.log(`position ${pos!.id} locked at ${(pos!.quote_bps / 1e4).toFixed(2)}x, window ends in ${((pos!.window_end_ms - Date.now()) / 1000).toFixed(1)}s`);
 while (Date.now() < pos!.window_end_ms + 1500) {
   await call("poke");
