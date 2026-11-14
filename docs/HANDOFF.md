@@ -19,7 +19,7 @@ screen at the gate, onboarding, 🏆 leaderboard, ⚔ tournaments with `/?t=<id>
 RPC failover. Engine settles tournaments. Verified: 30 contract tests,
 `bun run verify` OK, live single-player and a 2-player tournament in headless
 browsers. Live status and what's left: `docs/CHECKLIST.md`. Repo pushed to
-private `github.com/sairammr/riptide`. Pitch deck: Slides artifact
+private `github.com/sairammr/flappy-pipe`. Pitch deck: Slides artifact
 `https://claude.ai/artifact/AcL2RQUSWoGVRHTkFm4QDD`.
 
 ## 1. State in one paragraph

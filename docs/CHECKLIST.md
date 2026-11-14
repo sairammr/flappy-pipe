@@ -60,7 +60,7 @@ Deadline 2026-11-14 23:59 UTC. Testnet only (user decision). `[x]` only when ver
 - [x] 31 contract tests, board.check, tsc, `bun run verify` (Won, #741)
 
 ## 7. Ship
-- [x] Git repo with history, pushed to private `sairammr/riptide`
+- [x] Git repo with history, pushed to private `sairammr/flappy-pipe`
 - [x] README (do X → see Y, accounts, tx links, third-party + AI disclosure, risks)
 - [x] Pitch deck (Slides artifact)
 - [ ] Host web (Vercel) + engine (always-on box) — needs the human's accounts
