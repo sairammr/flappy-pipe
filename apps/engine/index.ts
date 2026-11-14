@@ -49,7 +49,7 @@ const short = (e: unknown) => String((e as Error)?.message ?? e).split("\n")[0]!
 let lastPing = 0;
 const active = () => ALWAYS_ON || Date.now() - lastPing < IDLE_AFTER_MS;
 
-// --- 1. poke every 1s while active (10s idle). Fire-and-forget: a poke takes 3-6s to land
+// --- 1. poke every 2s while active (10s idle). Fire-and-forget: a poke takes 3-6s to land
 // (call -> get_pool -> callback), so awaiting each one would space samples ~9s apart and make
 // every bet "price stale". near-api-js hands concurrent calls increasing nonces.
 async function pokeLoop() {
@@ -58,7 +58,8 @@ async function pokeLoop() {
     engine
       .signAndSendTransaction({ receiverId: CONTRACT, actions: MARKETS.map((m) => actions.functionCall("poke", { market: m.id }, 30n * TGAS, 0n)), waitUntil: "INCLUDED" })
       .catch((e) => console.log("poke:", short(e)));
-    await sleep(active() ? 1000 : 10_000);
+    // 2 s: samples still land every ~2-3 s (gates need one within 10 s) at half the gas of 1 Hz
+    await sleep(active() ? 2000 : 10_000);
   }
 }
 
