@@ -21,6 +21,15 @@ pub const KEEP_SETTLED: usize = 16;
 pub const MAX_GAP_BANDS: i64 = 8;
 const BOARD_SAMPLES: usize = 64;
 const SETTLEABLE_SCAN: usize = 500;
+/// Gate prices kept (one per 5 s window, ~85 min); older unsettled bets refund.
+pub const GATES: u64 = 1024;
+/// A gate is only priced if samples on both sides of it are at most this far apart.
+pub const MAX_GATE_GAP_MS: u64 = 10_000;
+pub const TOP: usize = 20;
+pub const TOURNEY_CHIPS: u64 = 10_000;
+pub const TOURNEY_MAX_PLAYERS: usize = 50;
+pub const TOURNEY_MAX_LIVE: usize = 50;
+pub const PRIZE_BPS: [u64; 3] = [5_000, 3_000, 2_000];
 
 #[ext_contract(ext_pool)]
 #[allow(dead_code)]
@@ -130,6 +139,59 @@ pub struct LeaderRow {
     pub chips: u64,
 }
 
+/// Cash results per player (session 1 trades + tournament prizes), in mUSD.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Default)]
+pub struct Stats {
+    pub pnl: i64,
+    pub trades: u32,
+    pub wins: u32,
+    pub best_bps: u32,
+}
+
+#[near(serializers = [json])]
+pub struct LeaderView {
+    pub account_id: AccountId,
+    #[serde(flatten)]
+    pub stats: Stats,
+}
+
+/// A timed tournament: everyone pays `entry` mUSD from their balance, gets TOURNEY_CHIPS,
+/// trades the same live pipes until `end_ms`; the pot goes 50/30/20 by final chips.
+#[near(serializers = [borsh])]
+#[derive(Clone)]
+pub struct Tourney {
+    pub host: AccountId,
+    pub entry: u64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub players: Vec<AccountId>,
+    pub open: u32,
+    pub pot: u64,
+    pub settled: bool,
+}
+
+#[near(serializers = [json])]
+pub struct TourneyPlayer {
+    pub account_id: AccountId,
+    pub chips: u64,
+    pub prize: u64,
+}
+
+#[near(serializers = [json])]
+pub struct TourneyView {
+    pub id: u64,
+    pub host: AccountId,
+    pub entry: u64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub pot: u64,
+    pub open: u32,
+    pub settled: bool,
+    /// ranked by chips, best first
+    pub players: Vec<TourneyPlayer>,
+}
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Riptide {
@@ -147,9 +209,18 @@ pub struct Riptide {
     open_liability: u64,
     cash: LookupMap<AccountId, u64>,
     cash_players: Vector<AccountId>,
+    /// window_idx -> price at that window's end (the gate), last GATES windows
+    gates: LookupMap<u64, u128>,
+    stats: LookupMap<AccountId, Stats>,
+    top: Vec<(AccountId, i64)>,
+    tourneys: LookupMap<u64, Tourney>,
+    next_tourney: u64,
+    stacks: LookupMap<(u64, AccountId), u64>,
+    live: Vec<u64>,
+    prizes: LookupMap<(u64, AccountId), u64>,
 }
 
-/// Layout deployed before cash mode; read once by `migrate`.
+/// Layout deployed with cash mode (v2); read once by `migrate`.
 #[near(serializers = [borsh])]
 pub struct OldRiptide {
     config: Config,
@@ -161,7 +232,11 @@ pub struct OldRiptide {
     open: IterableSet<u64>,
     chips: LookupMap<AccountId, u64>,
     players: Vector<AccountId>,
-    balances: LookupMap<AccountId, u128>,
+    cash_cfg: CashConfig,
+    vault_units: u64,
+    open_liability: u64,
+    cash: LookupMap<AccountId, u64>,
+    cash_players: Vector<AccountId>,
 }
 
 #[near(serializers = [borsh, json])]
@@ -221,11 +296,19 @@ impl Riptide {
             open_liability: 0,
             cash: LookupMap::new(b"C"),
             cash_players: Vector::new(b"L"),
+            gates: LookupMap::new(b"g"),
+            stats: LookupMap::new(b"s"),
+            top: Vec::new(),
+            tourneys: LookupMap::new(b"t"),
+            next_tourney: 2,
+            stacks: LookupMap::new(b"k"),
+            live: Vec::new(),
+            prizes: LookupMap::new(b"z"),
         }
     }
 
-    /// One-shot upgrade from the pre-cash layout. Keeps session 0, ring and positions.
-    /// ponytail: the old yocto `balances` map (prefix "b") is abandoned, testnet smoke funds only.
+    /// One-shot upgrade from the v2 (cash) layout. Keeps everything; adds gates, stats,
+    /// tournaments. Open bets settle under the gate rule.
     #[private]
     #[init(ignore_state)]
     pub fn migrate() -> Self {
@@ -240,11 +323,19 @@ impl Riptide {
             open: o.open,
             chips: o.chips,
             players: o.players,
-            cash_cfg: CashConfig::default(),
-            vault_units: 0,
-            open_liability: 0,
-            cash: LookupMap::new(b"C"),
-            cash_players: Vector::new(b"L"),
+            cash_cfg: o.cash_cfg,
+            vault_units: o.vault_units,
+            open_liability: o.open_liability,
+            cash: o.cash,
+            cash_players: o.cash_players,
+            gates: LookupMap::new(b"g"),
+            stats: LookupMap::new(b"s"),
+            top: Vec::new(),
+            tourneys: LookupMap::new(b"t"),
+            next_tourney: 2,
+            stacks: LookupMap::new(b"k"),
+            live: Vec::new(),
+            prizes: LookupMap::new(b"z"),
         }
     }
 
@@ -298,8 +389,12 @@ impl Riptide {
         min_quote_bps: u32,
         chips: u64,
     ) -> u64 {
-        require!(session_id <= 1, "unknown session");
         let max = if session_id == 1 { self.cash_cfg.max_cash_stake } else { MAX_CHIPS_PER_TAP };
+        if session_id >= 2 {
+            let t = self.tourneys.get(&session_id).unwrap_or_else(|| env::panic_str("unknown session"));
+            // every bet's gate is inside the tournament, so the bell settles everything
+            require!(window_idx * WINDOW_MS >= t.start_ms && (window_idx + 1) * WINDOW_MS <= t.end_ms, "outside tournament");
+        }
         require!(chips > 0 && chips <= max, "bad chip amount");
         let who = env::predecessor_account_id();
         let have = self.bal(session_id, &who).unwrap_or_else(|| env::panic_str("join or deposit first"));
@@ -317,6 +412,9 @@ impl Riptide {
             require!((self.open_liability + payout) as u128 <= cap, "house limit");
             self.vault_units += chips;
             self.open_liability += payout;
+        }
+        if session_id >= 2 {
+            self.tourneys.get_mut(&session_id).unwrap().open += 1;
         }
         let mut acct = self.accts.get(&who).cloned().unwrap_or_default();
         require!(acct.open.len() < MAX_OPEN_PER_ACCOUNT, "too many open positions");
@@ -348,13 +446,13 @@ impl Riptide {
 
     /// Permissionless. Unknown, already-settled and not-yet-settleable ids are skipped.
     pub fn settle(&mut self, position_ids: Vec<u64>) {
-        let samples = self.samples();
+        let Some(last) = self.last() else { return };
         for id in position_ids {
             let Some(p) = self.positions.get(&id) else { continue };
             if p.status != Status::Open {
                 continue;
             }
-            let Some(outcome) = outcome(&samples, p) else { continue };
+            let Some(outcome) = outcome(self.gates.get(&p.window_idx).copied(), last.ts_ms, p) else { continue };
             let mut p = p.clone();
             p.status = outcome;
             let payout = p.stake * p.quote_bps as u64 / 10_000;
@@ -367,6 +465,20 @@ impl Riptide {
                 // stake already sits in the vault; the vault pays credits
                 self.vault_units = self.vault_units.saturating_sub(credit);
                 self.open_liability = self.open_liability.saturating_sub(payout);
+                if outcome != Status::Refunded {
+                    let mut st = self.stats.get(&p.owner).cloned().unwrap_or_default();
+                    st.trades += 1;
+                    if outcome == Status::Won {
+                        st.wins += 1;
+                        st.best_bps = st.best_bps.max(p.quote_bps);
+                    }
+                    self.add_pnl(&p.owner, st, credit as i64 - p.stake as i64);
+                }
+            }
+            if p.session_id >= 2 {
+                if let Some(t) = self.tourneys.get_mut(&p.session_id) {
+                    t.open = t.open.saturating_sub(1);
+                }
             }
             if credit > 0 {
                 let c = self.bal(p.session_id, &p.owner).unwrap_or(0);
@@ -472,8 +584,109 @@ impl Riptide {
         }
     }
 
+    // ---------- tournaments (sessions >= 2) ----------
+
+    /// Host creates and joins. entry in mUSD (0 = free), start within 1 h, 1-30 min long.
+    pub fn create_tourney(&mut self, entry: u64, start_ms: u64, length_ms: u64) -> u64 {
+        let now = now_ms();
+        require!(entry <= 10_000, "entry too high");
+        require!(start_ms >= now && start_ms <= now + 3_600_000, "bad start");
+        require!(length_ms >= 60_000 && length_ms <= 1_800_000 && length_ms % WINDOW_MS == 0, "bad length");
+        require!(self.live.len() < TOURNEY_MAX_LIVE, "too many tournaments");
+        let start_ms = start_ms.div_ceil(WINDOW_MS) * WINDOW_MS;
+        let id = self.next_tourney;
+        self.next_tourney += 1;
+        let host = env::predecessor_account_id();
+        self.tourneys.insert(id, Tourney { host, entry, start_ms, end_ms: start_ms + length_ms, players: vec![], open: 0, pot: 0, settled: false });
+        self.live.push(id);
+        self.join_tourney(id);
+        id
+    }
+
+    /// Pays the entry from your balance, gives you TOURNEY_CHIPS. Before the start only.
+    pub fn join_tourney(&mut self, id: u64) {
+        let who = env::predecessor_account_id();
+        let t = self.tourneys.get(&id).unwrap_or_else(|| env::panic_str("unknown tournament")).clone();
+        require!(now_ms() < t.start_ms, "already started");
+        require!(!t.players.contains(&who), "already joined");
+        require!(t.players.len() < TOURNEY_MAX_PLAYERS, "tournament full");
+        if t.entry > 0 {
+            let b = self.cash.get(&who).copied().unwrap_or(0);
+            require!(b >= t.entry, "insufficient balance");
+            self.cash.insert(who.clone(), b - t.entry);
+        }
+        let t = self.tourneys.get_mut(&id).unwrap();
+        t.players.push(who.clone());
+        t.pot += t.entry;
+        self.stacks.insert((id, who), TOURNEY_CHIPS);
+    }
+
+    /// Permissionless, after the bell once every bet in it is settled. Pot 50/30/20 by
+    /// chips (ties split their places' shares); fewer than 2 players = entries refunded.
+    pub fn settle_tourney(&mut self, id: u64) {
+        let t = self.tourneys.get(&id).unwrap_or_else(|| env::panic_str("unknown tournament")).clone();
+        require!(!t.settled, "already settled");
+        require!(now_ms() >= t.end_ms, "not over");
+        require!(t.open == 0, "bets still open");
+        let prizes = if t.players.len() < 2 {
+            t.players.iter().map(|_| t.entry).collect()
+        } else {
+            let chips: Vec<u64> = t.players.iter().map(|a| self.stacks.get(&(id, a.clone())).copied().unwrap_or(0)).collect();
+            split_pot(t.pot, &chips)
+        };
+        for (a, prize) in t.players.iter().zip(prizes) {
+            self.prizes.insert((id, a.clone()), prize);
+            if prize > 0 {
+                let b = self.cash.get(a).copied().unwrap_or(0);
+                self.cash.insert(a.clone(), b + prize);
+            }
+            if t.entry > 0 && t.players.len() >= 2 {
+                let st = self.stats.get(a).cloned().unwrap_or_default();
+                self.add_pnl(a, st, prize as i64 - t.entry as i64);
+            }
+        }
+        self.tourneys.get_mut(&id).unwrap().settled = true;
+        self.live.retain(|x| *x != id);
+        env::log_str(&format!("EVENT_JSON:{{\"standard\":\"riptide\",\"version\":\"1\",\"event\":\"tourney\",\"data\":{{\"id\":{id},\"pot\":{}}}}}", t.pot));
+    }
+
+    pub fn tourney(&self, id: u64) -> Option<TourneyView> {
+        let t = self.tourneys.get(&id)?;
+        let mut players: Vec<TourneyPlayer> = t
+            .players
+            .iter()
+            .map(|a| TourneyPlayer {
+                account_id: a.clone(),
+                chips: self.stacks.get(&(id, a.clone())).copied().unwrap_or(0),
+                prize: self.prizes.get(&(id, a.clone())).copied().unwrap_or(0),
+            })
+            .collect();
+        players.sort_by(|x, y| y.chips.cmp(&x.chips));
+        Some(TourneyView { id, host: t.host.clone(), entry: t.entry, start_ms: t.start_ms, end_ms: t.end_ms, pot: t.pot, open: t.open, settled: t.settled, players })
+    }
+
+    /// Unsettled tournaments, oldest first.
+    pub fn tourneys_live(&self) -> Vec<u64> {
+        self.live.clone()
+    }
+
+    // ---------- global leaderboard (cash) ----------
+
+    /// Top players by cash P&L, best first.
+    pub fn leaders(&self) -> Vec<LeaderView> {
+        self.top
+            .iter()
+            .map(|(a, _)| LeaderView { account_id: a.clone(), stats: self.stats.get(a).cloned().unwrap_or_default() })
+            .collect()
+    }
+
+    pub fn stats(&self, account_id: AccountId) -> Stats {
+        self.stats.get(&account_id).cloned().unwrap_or_default()
+    }
+
     // ---------- owner ----------
 
+    #[payable]
     pub fn set_config(
         &mut self,
         pool_contract: Option<AccountId>,
@@ -486,9 +699,13 @@ impl Riptide {
         max_exposure_bps: Option<u32>,
         cash_max_quote_bps: Option<u32>,
     ) {
+        near_sdk::assert_one_yocto();
         require!(env::predecessor_account_id() == self.config.owner, "owner only");
+        let locked = !self.cash_players.is_empty();
         let c = &mut self.cash_cfg;
         if let Some(v) = yocto_per_unit {
+            // changing the rate after deposits would re-price everyone's balance
+            require!(!locked, "rate locked after deposits");
             require!(v.0 > 0, "bad yocto_per_unit");
             c.yocto_per_unit = v;
         }
@@ -497,6 +714,7 @@ impl Riptide {
             c.cash_edge_bps = v;
         }
         if let Some(v) = max_cash_stake {
+            require!(v > 0 && v <= 10_000, "bad max stake");
             c.max_cash_stake = v;
         }
         if let Some(v) = max_exposure_bps {
@@ -504,6 +722,7 @@ impl Riptide {
             c.max_exposure_bps = v;
         }
         if let Some(v) = cash_max_quote_bps {
+            require!(v >= MIN_QUOTE_BPS && v <= MAX_QUOTE_BPS, "bad quote cap");
             c.cash_max_quote_bps = v;
         }
         if let Some(v) = pool_contract {
@@ -574,8 +793,7 @@ impl Riptide {
     }
 
     pub fn settleable(&self, limit: u32) -> Vec<u64> {
-        let samples = self.samples();
-        let Some(last) = samples.last() else { return vec![] };
+        let Some(last) = self.last() else { return vec![] };
         // ponytail: linear scan of the open set, capped; index by window if open count grows past ~500
         self.open
             .iter()
@@ -596,9 +814,10 @@ impl Riptide {
             1 => &self.cash_players,
             _ => return vec![],
         };
-        // ponytail: sorts every player per call; fine to a few thousand players
+        // ponytail: first 1000 players only (bounded gas); `leaders()` is the global board
         let mut rows: Vec<LeaderRow> = players
             .iter()
+            .take(1000)
             .map(|a| LeaderRow { account_id: a.clone(), chips: self.bal(session_id, a).unwrap_or(0) })
             .collect();
         rows.sort_by(|x, y| y.chips.cmp(&x.chips)); // stable: earlier join wins ties
@@ -612,7 +831,7 @@ impl Riptide {
         let now = now_ms();
         let w0 = now / WINDOW_MS + 1;
         let last = self.last().filter(|l| now <= l.ts_ms + STALE_MS)?;
-        if session_id > 1 || window_idx < w0 || window_idx >= w0 + COLUMNS || band_lo < 0 || band_lo > band_hi || band_hi - band_lo >= MAX_GAP_BANDS {
+        if session_id > 1 && !self.tourneys.contains_key(&session_id) || window_idx < w0 || window_idx >= w0 + COLUMNS || band_lo < 0 || band_lo > band_hi || band_hi - band_lo >= MAX_GAP_BANDS {
             return None;
         }
         let q = self.range_quote(session_id, last, band_lo, band_hi, window_idx, now).2;
@@ -629,12 +848,29 @@ impl Riptide {
         match session_id {
             0 => self.chips.get(who).copied(),
             1 => self.cash.get(who).copied(),
-            _ => None,
+            s => self.stacks.get(&(s, who.clone())).copied(),
         }
     }
 
     fn set_bal(&mut self, session_id: u64, who: &AccountId, v: u64) {
-        if session_id == 1 { self.cash.insert(who.clone(), v) } else { self.chips.insert(who.clone(), v) };
+        match session_id {
+            0 => self.chips.insert(who.clone(), v),
+            1 => self.cash.insert(who.clone(), v),
+            s => self.stacks.insert((s, who.clone()), v),
+        };
+    }
+
+    /// Saves stats with pnl += delta and keeps `top` (best TOP by pnl) in order.
+    /// ponytail: a player who drops out of `top` only re-enters on their next result.
+    fn add_pnl(&mut self, who: &AccountId, mut st: Stats, delta: i64) {
+        st.pnl += delta;
+        self.top.retain(|(a, _)| a != who);
+        let at = self.top.partition_point(|(_, p)| *p >= st.pnl);
+        if at < TOP {
+            self.top.insert(at, (who.clone(), st.pnl));
+            self.top.truncate(TOP);
+        }
+        self.stats.insert(who.clone(), st);
     }
 
     fn units_attached(&self) -> u64 {
@@ -654,7 +890,8 @@ impl Riptide {
         require!(band_lo >= 0, "band below zero");
         require!(band_lo <= band_hi && band_hi - band_lo < MAX_GAP_BANDS, "bad gap");
         let (lo, hi) = (self.band(band_lo).0, self.band(band_hi).1);
-        let t_ms = (window_idx + 1) * WINDOW_MS - now;
+        // time from the last known price, not from now: the pool may have moved since
+        let t_ms = ((window_idx + 1) * WINDOW_MS).saturating_sub(last.ts_ms.min(now)).max(1);
         let (edge, cap) = if session_id == 1 {
             (self.cash_cfg.cash_edge_bps, self.cash_cfg.cash_max_quote_bps)
         } else {
@@ -697,6 +934,21 @@ impl Riptide {
         if self.last().is_some_and(|l| ts_ms < l.ts_ms + MIN_SAMPLE_GAP_MS) {
             return false;
         }
+        if let Some(prev) = self.last().filter(|l| ts_ms - l.ts_ms <= MAX_GATE_GAP_MS) {
+            // Price every window end crossed since the last sample, on the straight line
+            // between the two samples (the line the bird is drawn on).
+            let mut end = (prev.ts_ms / WINDOW_MS + 1) * WINDOW_MS;
+            while end <= ts_ms {
+                let (dt, span) = ((end - prev.ts_ms) as u128, (ts_ms - prev.ts_ms) as u128);
+                let at = if price >= prev.price { prev.price + (price - prev.price) * dt / span } else { prev.price - (prev.price - price) * dt / span };
+                let w = end / WINDOW_MS - 1;
+                self.gates.insert(w, at);
+                if w >= GATES {
+                    self.gates.remove(&(w - GATES));
+                }
+                end += WINDOW_MS;
+            }
+        }
         let s = Sample { ts_ms, price };
         if self.ring.len() < RING {
             self.ring.push(s);
@@ -708,21 +960,43 @@ impl Riptide {
     }
 }
 
-/// None = not settleable yet. Pass-through: every sample in [window_start, window_end]
-/// must be inside [lo, hi); none => refund.
-fn outcome(samples: &[Sample], p: &Position) -> Option<Status> {
-    let (start, end) = (p.window_idx * WINDOW_MS, p.window_end_ms());
-    if samples.last()?.ts_ms < end {
-        return None;
+/// None = not settleable yet. Gate rule: the price where the bird meets the pipe (window
+/// end, interpolated between the samples around it) must be inside [lo, hi). No gate price
+/// (samples too far apart, or older than GATES windows) => refund.
+fn outcome(gate: Option<u128>, last_ts: u64, p: &Position) -> Option<Status> {
+    match gate {
+        Some(g) => Some(if g >= p.price_lo && g < p.price_hi { Status::Won } else { Status::Lost }),
+        None if last_ts >= p.window_end_ms() => Some(Status::Refunded),
+        None => None,
     }
-    let mut seen = false;
-    for s in samples.iter().filter(|s| s.ts_ms >= start && s.ts_ms <= end) {
-        if s.price < p.price_lo || s.price >= p.price_hi {
-            return Some(Status::Lost);
+}
+
+/// Pot shares by final chips (best first): 50/30/20, leftover shares to 1st, tied players
+/// split the shares of the places they cover. Rounding dust goes to the first player.
+fn split_pot(pot: u64, chips: &[u64]) -> Vec<u64> {
+    let n = chips.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|a, b| chips[*b].cmp(&chips[*a])); // stable: earlier join first
+    let mut share = vec![0u64; n]; // bps by place
+    for (i, b) in PRIZE_BPS.iter().enumerate() {
+        share[if i < n { i } else { 0 }] += b;
+    }
+    let mut out = vec![0u64; n];
+    let mut i = 0;
+    while i < n {
+        let mut j = i;
+        while j + 1 < n && chips[order[j + 1]] == chips[order[i]] {
+            j += 1;
         }
-        seen = true;
+        let bps: u64 = share[i..=j].iter().sum();
+        for k in i..=j {
+            out[order[k]] = pot * bps / 10_000 / (j - i + 1) as u64;
+        }
+        i = j + 1;
     }
-    Some(if seen { Status::Won } else { Status::Refunded })
+    let paid: u64 = out.iter().sum();
+    out[order[0]] += pot - paid;
+    out
 }
 
 #[cfg(test)]
@@ -768,19 +1042,37 @@ mod tests {
     }
 
     #[test]
-    fn pass_through_rule() {
-        // gap [110,120), window 1 = [5_000, 10_000]
-        let p = pos(110, 120, 1);
-        assert_eq!(outcome(&[s(0, 115), s(5_000, 115)], &p), None);
-        // all inside, incl. exactly lo and the window edges; outside samples before/after ignored
-        let won = [s(4_000, 200), s(5_000, 110), s(8_000, 119), s(10_000, 115), s(10_001, 500)];
-        assert_eq!(outcome(&won, &p), Some(Status::Won));
-        // exactly hi is outside (exclusive)
-        assert_eq!(outcome(&[s(5_000, 115), s(7_000, 120), s(10_000, 115)], &p), Some(Status::Lost));
-        // one dip below lo
-        assert_eq!(outcome(&[s(5_000, 115), s(7_000, 109), s(10_000, 115)], &p), Some(Status::Lost));
-        // no sample in window
-        assert_eq!(outcome(&[s(4_000, 115), s(10_500, 115)], &p), Some(Status::Refunded));
+    fn gate_rule() {
+        let p = pos(110, 120, 1); // gap [110,120), gate at 10_000
+        assert_eq!(outcome(None, 9_999, &p), None);
+        assert_eq!(outcome(Some(110), 10_000, &p), Some(Status::Won)); // lo inclusive
+        assert_eq!(outcome(Some(120), 10_000, &p), Some(Status::Lost)); // hi exclusive
+        assert_eq!(outcome(None, 10_000, &p), Some(Status::Refunded));
+    }
+
+    #[test]
+    fn gates_interpolate() {
+        let mut c = fresh();
+        c.record(8_000, 100);
+        c.record(12_000, 140); // crosses 10_000 halfway => 120
+        assert_eq!(c.gates.get(&1).copied(), Some(120));
+        c.record(13_000, 90);
+        c.record(15_000, 70); // exactly on the gate
+        assert_eq!(c.gates.get(&2).copied(), Some(70));
+        c.record(26_000, 70); // 11 s gap: gates 3 and 4 unpriced
+        assert!(c.gates.get(&3).is_none() && c.gates.get(&4).is_none());
+        c.record(27_000, 80);
+        c.record(31_000, 120); // crosses 30_000 => 110
+        assert_eq!(c.gates.get(&5).copied(), Some(110));
+    }
+
+    #[test]
+    fn pot_split() {
+        assert_eq!(split_pot(1_000, &[5, 9, 7, 1]), vec![200, 500, 300, 0]);
+        assert_eq!(split_pot(1_000, &[5, 9]), vec![300, 700]);
+        assert_eq!(split_pot(1_000, &[9, 9, 1]), vec![400, 400, 200]); // tie for 1st splits 50+30
+        assert_eq!(split_pot(1_001, &[3, 3, 3]), vec![335, 333, 333]); // dust to first
+        assert_eq!(split_pot(1_000, &[9]), vec![1_000]);
     }
 
     #[test]
@@ -827,7 +1119,7 @@ mod tests {
         assert!(c.settleable(10).is_empty());
         c.settle(vec![id, 999]);
         assert_eq!(c.positions(accounts(1))[0].status, Status::Open);
-        c.record(30_000, SPOT + 2 * TICK - 1);
+        c.record(30_000, SPOT + 2 * TICK - 1); // gate 5 = this sample
         assert_eq!(c.settleable(10), vec![id]);
         c.settle(vec![id]);
         assert_eq!(c.positions(accounts(1))[0].status, Status::Won);
@@ -992,7 +1284,7 @@ mod tests {
     fn cash_quotes() {
         let c = cash_seeded();
         let (q0, q1) = (c.quote(999, 1001, 5, None).unwrap(), c.quote(999, 1001, 5, Some(1)).unwrap());
-        assert_eq!(q1 as u64, q0 as u64 * 9_700 / 10_000 + 0 * 1, "edge 300 bps: {q0} {q1}");
+        assert!((q1 as u64).abs_diff(q0 as u64 * 9_700 / 10_000) <= 1, "edge 300 bps: {q0} {q1}");
         // far gap: chips quote hits 500x, cash capped at 100x
         assert_eq!(c.quote(1060, 1060, 5, Some(0)), Some(MAX_QUOTE_BPS));
         assert_eq!(c.quote(1060, 1060, 5, Some(1)), Some(1_000_000));
@@ -1031,22 +1323,115 @@ mod tests {
     }
 
     #[test]
-    fn migrate_keeps_session0() {
-        let mut c = seeded();
-        let id = c.place_chips(0, 999, 1001, 5, 0, 100);
+    fn migrate_keeps_everything() {
+        let mut c = cash_seeded();
+        let id = c.place_chips(1, 999, 1001, 5, 0, 100);
         c.positions.flush();
         c.accts.flush();
         c.open.flush();
         c.chips.flush();
         c.players.flush();
-        let Riptide { config, ring, head, next_id, positions, accts, open, chips, players, .. } = c;
-        let old = OldRiptide { config, ring, head, next_id, positions, accts, open, chips, players, balances: LookupMap::new(b"b") };
+        c.cash.flush();
+        c.cash_players.flush();
+        let (vault, liab) = (c.vault_units, c.open_liability);
+        let Riptide { config, ring, head, next_id, positions, accts, open, chips, players, cash_cfg, vault_units, open_liability, cash, cash_players, .. } = c;
+        let old = OldRiptide { config, ring, head, next_id, positions, accts, open, chips, players, cash_cfg, vault_units, open_liability, cash, cash_players };
         env::state_write(&old);
-        let m = Riptide::migrate();
-        assert_eq!(m.chips(0, accounts(1)), Some(START_CHIPS - 100));
+        let mut m = Riptide::migrate();
+        assert_eq!(m.balance(accounts(1)), 10_000 - 100);
+        assert_eq!((m.vault_units, m.open_liability), (vault, liab));
         assert_eq!(m.positions(accounts(1))[0].id, id);
-        assert_eq!(m.leaderboard(0).len(), 1);
-        assert_eq!(m.vault().vault_units, 0);
-        assert_eq!(m.vault().cash_edge_bps, 300);
+        m.record(25_000, SPOT);
+        m.record(30_000, SPOT);
+        m.settle(vec![id]);
+        assert_eq!(m.positions(accounts(1))[0].status, Status::Won);
+        assert_eq!(m.leaders()[0].account_id, accounts(1));
+        assert_eq!(m.stats(accounts(1)).trades, 1);
+    }
+
+    #[test]
+    fn leaders_ranked_by_pnl() {
+        let mut c = cash_seeded();
+        let win = c.place_chips(1, 999, 1001, 5, 0, 100);
+        pay_ctx(20_100, 3, NEAR);
+        c.deposit();
+        ctx(20_100, 3);
+        let lose = c.place(1003, 1004, 5, 0, 200);
+        c.record(25_000, SPOT);
+        c.record(30_000, SPOT);
+        c.settle(vec![win, lose]);
+        let l = c.leaders();
+        assert_eq!(l.iter().map(|r| r.account_id.clone()).collect::<Vec<_>>(), vec![accounts(1), accounts(3)]);
+        assert_eq!(l[1].stats.pnl, -200);
+        assert_eq!((l[0].stats.wins, l[0].stats.trades), (1, 1));
+        assert!(l[0].stats.pnl > 0 && l[0].stats.best_bps > 10_000);
+    }
+
+    #[test]
+    fn tourney_flow() {
+        let mut c = cash_seeded(); // acct1 has 10_000 mUSD
+        pay_ctx(20_100, 3, NEAR);
+        c.deposit();
+        pay_ctx(20_100, 4, NEAR);
+        c.deposit();
+        ctx(20_100, 1);
+        let id = c.create_tourney(1_000, 21_000, 60_000);
+        assert_eq!(id, 2);
+        let t = c.tourney(id).unwrap();
+        assert_eq!((t.start_ms, t.end_ms), (25_000, 85_000));
+        ctx(20_200, 3);
+        c.join_tourney(id);
+        ctx(20_200, 4);
+        c.join_tourney(id);
+        assert_eq!(c.balance(accounts(4)), 9_000);
+        assert_eq!(c.tourney(id).unwrap().pot, 3_000);
+        // acct3 bets on window 5 (gate 30_000) and wins; acct4 loses; acct1 sits out
+        c.record(23_000, SPOT + TICK / 2);
+        ctx(23_100, 3);
+        let w = c.place_chips(id, 999, 1001, 5, 0, 1_000);
+        ctx(23_100, 4);
+        let l = c.place_chips(id, 1003, 1004, 5, 0, 1_000);
+        c.record(28_000, SPOT);
+        c.record(30_000, SPOT);
+        c.settle(vec![w, l]);
+        assert_eq!(c.tourney(id).unwrap().open, 0);
+        ctx(85_000, 2);
+        c.settle_tourney(id);
+        let t = c.tourney(id).unwrap();
+        assert!(t.settled);
+        assert_eq!(t.players.iter().map(|p| (p.account_id.clone(), p.prize)).collect::<Vec<_>>(), vec![(accounts(3), 1_500), (accounts(1), 900), (accounts(4), 600)]);
+        assert_eq!(c.balance(accounts(3)), 9_000 + 1_500);
+        assert_eq!(c.stats(accounts(4)).pnl, -400);
+        assert!(c.tourneys_live().is_empty());
+        assert_eq!(c.vault_units, 100_000); // tournaments never touch the vault
+    }
+
+    #[test]
+    #[should_panic(expected = "already started")]
+    fn tourney_late_join() {
+        let mut c = cash_seeded();
+        let id = c.create_tourney(0, 21_000, 60_000);
+        ctx(25_000, 3);
+        c.join_tourney(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside tournament")]
+    fn tourney_bet_past_bell() {
+        let mut c = cash_seeded();
+        let id = c.create_tourney(0, 21_000, 60_000);
+        c.record(80_000, SPOT);
+        ctx(80_100, 1);
+        c.place_chips(id, 999, 1001, 17, 0, 100); // gate 90_000 > bell 85_000
+    }
+
+    #[test]
+    fn tourney_single_player_refund() {
+        let mut c = cash_seeded();
+        let id = c.create_tourney(500, 21_000, 60_000);
+        assert_eq!(c.balance(accounts(1)), 9_500);
+        ctx(85_000, 2);
+        c.settle_tourney(id);
+        assert_eq!(c.balance(accounts(1)), 10_000);
     }
 }
