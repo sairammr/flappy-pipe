@@ -3,8 +3,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import { type Board, type Geo, LAG_MS, MAX_GAP, type Position, type Status, WINDOW_MS, makeGeo, msAt, mult, quoteGap, resolve, toU, uAt, uAtTime, usd, xOf, yOf } from "@/lib/board";
-import { DEPOSIT_MUSD, FIXTURE, MODE, type Session, api, call, deposit, loadSession, ping, playAsGuest, playWithWallet, reason, setMode, signOut, type Vault, withdraw } from "@/lib/near";
+import { type Board, type Geo, LAG_MS, MAX_GAP, type Position, type Pricing, type Status, WINDOW_MS, makeGeo, msAt, mult, quoteGap, resolve, toU, uAt, uAtTime, usd, xOf, yOf } from "@/lib/board";
+import { DEPOSIT_MUSD, FIXTURE, MODE, type Session, api, call, deposit, loadSession, ping, playAsGuest, playWithWallet, reason, setMode, signOut, withdraw } from "@/lib/near";
+import { Leaderboard, Onboarding, TourneyBar, Tournaments, short } from "./sheets";
 import { flappy as skin } from "@/skins/flappy";
 import type { Gap } from "@/skins/skin";
 
@@ -14,10 +15,9 @@ const TX_MS = 3000; // a Drop lands on-chain ~2-3 s after the tap; its pipe must
 // a window never holds two of your bets with the same gap).
 const keyOf = (p: Position) => `${p.window_idx}:${p.band_lo}:${p.band_hi}`;
 const payOf = (p: Position) => Math.floor((p.stake * p.quote_bps) / 1e4);
-const short = (id: string) => {
-  const s = id.replace(/\.testnet$/, "");
-  return s.length > 14 ? `${s.slice(0, 6)}…${s.slice(-5)}` : s;
-};
+// Tournament bets use the contract's session pricing: no house edge, 500x cap.
+const TOURNEY_PRICING: Pricing = { cash_edge_bps: 0, cash_max_quote_bps: 5_000_000 };
+const pts = (n: number, sign = false) => `${sign && n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toLocaleString("en-US")}`;
 
 // The pipe you're shaping: absolute bands [lo, hi] (hi inclusive) on window `win`.
 // `drag` says which part the finger holds; du/dlo/dhi are where the drag started.
@@ -31,6 +31,9 @@ export default function Game() {
   const [line, setLine] = useState("");
   const [drawer, setDrawer] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [sheet, setSheet] = useState<null | "leaders" | "tourneys">(null);
+  // ?t=<id>: the board plays that tournament (session id) instead of cash (session 1).
+  const [tid, setTid] = useState<number | null>(null);
   const [, setTick] = useState(0); // re-render for the drop button's live quote + optimistic balance
   const rerender = () => setTick((n) => n + 1);
 
@@ -41,7 +44,10 @@ export default function Game() {
   const stakeRef = useRef(stake);
   stakeRef.current = stake;
   const edit = useRef<Edit>({ touched: false, lo: NaN, hi: NaN, win: 0, drag: null, y0: 0, lo0: 0, hi0: 0, shownLo: NaN, shownHi: NaN });
-  const vaultRef = useRef<Vault | undefined>(undefined); // house edge + quote cap, for local quotes
+  const pricingRef = useRef<Pricing | undefined>(undefined); // house edge + quote cap, for local quotes
+  const sessRef = useRef(1); // the session the board plays: 1 = cash, >= 2 = tournament
+  const fmtRef = useRef((n: number, sign?: boolean) => usd(n, sign));
+  const tWinRef = useRef<{ lo: number; hi: number } | null>(null); // a tournament's first/last pipe
   const serverPos = useRef<Position[]>([]);
   const pending = useRef<Position[]>([]);
   // What each bet shows right now. A pipe is decided the instant the bird decides it on
@@ -54,6 +60,8 @@ export default function Game() {
 
   useEffect(() => {
     setMounted(true);
+    const t = Number(new URLSearchParams(location.search).get("t"));
+    if (t >= 2 && !FIXTURE) setTid(t);
     const s = loadSession();
     // Demo needs no sign-in: a local player with a pretend $10 exists from the first frame.
     if (!s && FIXTURE) playAsGuest().then((s) => deposit(s).then(() => setSession(s)));
@@ -86,8 +94,21 @@ export default function Game() {
   });
   const balance = { data: account.data?.bal };
   const vault = useQuery({ queryKey: ["vault"], queryFn: api.vault, staleTime: 60_000 });
-
-  useEffect(() => void (vaultRef.current = vault.data), [vault.data]);
+  const tq = useQuery({ queryKey: ["tourney", tid], queryFn: () => api.tourney(tid!), enabled: tid != null, refetchInterval: 2000 });
+  const tour = tid != null ? tq.data ?? null : null;
+  const myRow = tour?.players.find((p) => p.account_id === acct);
+  const pricing = tid != null ? TOURNEY_PRICING : vault.data;
+  const fmt = tid != null ? pts : usd;
+  pricingRef.current = pricing;
+  sessRef.current = tid ?? 1;
+  fmtRef.current = fmt;
+  tWinRef.current = tour ? { lo: tour.start_ms / WINDOW_MS, hi: tour.end_ms / WINDOW_MS - 1 } : null;
+  const openTourney = (id: number | null) => {
+    history.replaceState(null, "", id ? `?t=${id}` : "/");
+    edit.current.win = 0; // re-aim at the first open pipe of the new session
+    setTid(id);
+    setSheet(null);
+  };
   useEffect(() => {
     const b = board.data;
     // Another RPC node may answer from an older block; never step the board back in time.
@@ -149,7 +170,8 @@ export default function Game() {
       if (Math.abs(off) > 1.8) recenter = true;
       if (recenter) (centerU += off * 0.04), (recenter = Math.abs(off) > 0.15);
       // The aimed pipe always starts after a Drop tapped now would land, else it moves on.
-      const e = edit.current, minWin = Math.floor((now + (FIXTURE ? 0 : TX_MS)) / WINDOW_MS) + 1;
+      const e = edit.current, tw = tWinRef.current;
+      const minWin = Math.max(Math.floor((now + (FIXTURE ? 0 : TX_MS)) / WINDOW_MS) + 1, tw?.lo ?? 0);
       if (e.win < minWin) e.win = minWin;
       const g = makeGeo(W, H - skin.groundH, view, centerU);
       geoRef.current = g;
@@ -168,6 +190,7 @@ export default function Game() {
         // Your bets: solid pipes, one per window, a gap per bet.
         const mine = new Map<number, Gap[]>();
         for (const p of [...serverPos.current, ...pending.current]) {
+          if (p.session_id !== sessRef.current) continue;
           const r = resolve(ss, p);
           // Revealed when the bird gets there, never before (the chain may settle while the
           // bird is still LAG_MS behind); the chain's verdict wins once it has one.
@@ -179,7 +202,7 @@ export default function Game() {
           if (was === "Open" && status !== "Open") {
             const won = status === "Won", lost = status === "Lost";
             floaters.current.push({
-              text: status === "Refunded" ? "refunded" : usd(won ? payOf(p) - p.stake : -p.stake, true),
+              text: status === "Refunded" ? "refunded" : fmtRef.current(won ? payOf(p) - p.stake : -p.stake, true),
               sub: won ? skin.copy.won : lost ? skin.copy.lost : "no price in window",
               win: won, ms: view, u: birdU, t0: tNow,
             });
@@ -193,8 +216,8 @@ export default function Game() {
           const gaps = mine.get(p.window_idx) ?? [];
           gaps.push({
             ...gapOf(p.band_lo, p.band_hi), state: st,
-            label: st === "won" ? usd(pay - p.stake, true) : st === "lost" ? usd(-p.stake, true) : mult(p.quote_bps),
-            sub: st === "open" ? `win ${usd(pay)}` : null,
+            label: st === "won" ? fmtRef.current(pay - p.stake, true) : st === "lost" ? fmtRef.current(-p.stake, true) : mult(p.quote_bps),
+            sub: st === "open" ? `win ${fmtRef.current(pay)}` : null,
           });
           mine.set(p.window_idx, gaps);
         }
@@ -203,15 +226,15 @@ export default function Game() {
         // carry your current gap, so you can see the corridor you're setting up.
         e.shownLo += (e.lo - e.shownLo) * 0.35;
         e.shownHi += (e.hi - e.shownHi) * 0.35;
-        const q = quoteGap(spotU, b.sigma_ppm, e.lo, e.hi, e.win, now, vaultRef.current);
+        const q = quoteGap(spotU, b.sigma_ppm, e.lo, e.hi, e.win, Math.min(now, b.last_sample_ms ?? now), pricingRef.current);
         for (let w = Math.floor(msAt(g, -colW) / WINDOW_MS); xOf(g, w * WINDOW_MS) < W; w++) {
           if (mine.has(w)) skin.column(ctx, col(w), mine.get(w)!, false, tMs);
           else if (w === e.win)
             skin.column(ctx, col(w), [{
               y: yOf(g, e.shownHi + 1), h: (e.shownHi - e.shownLo + 1) * g.rowH, state: q ? "aim" : "bad",
-              label: q ? mult(q) : "—", sub: q ? `win ${usd(Math.floor((stakeRef.current * q) / 1e4))}` : "too safe",
+              label: q ? mult(q) : "—", sub: q ? `win ${fmtRef.current(Math.floor((stakeRef.current * q) / 1e4))}` : "too safe",
             }], false, tMs);
-          else if (w > e.win) skin.column(ctx, col(w), [{ ...gapOf(e.lo, e.hi), state: "aim", label: null, sub: null }], true, tMs);
+          else if (w > e.win && (!tw || w <= tw.hi)) skin.column(ctx, col(w), [{ ...gapOf(e.lo, e.hi), state: "aim", label: null, sub: null }], true, tMs);
         }
 
         const trail = ss.filter((s) => s.t < view).map((s) => ({ x: xOf(g, s.t), y: yOf(g, s.u) })).filter((p) => p.x > -20);
@@ -279,25 +302,26 @@ export default function Game() {
     const g = geoRef.current, b = boardRef.current, e = edit.current;
     if (!g || !b?.spot) return;
     if (!session) return setLine(skin.copy.signedOut);
-    if ((shownBal ?? 0) < stakeRef.current) return setLine("Balance too low — deposit to keep playing");
+    if (tid != null && !myRow) return setLine(tour && Date.now() < tour.start_ms ? "Join the tournament to play" : "You're watching this tournament");
+    if (tWinRef.current && e.win > tWinRef.current.hi) return setLine("Bell — no more pipes in this tournament");
+    if ((shownBal ?? 0) < stakeRef.current) return setLine(tid != null ? "Out of points" : "Balance too low — deposit to keep playing");
     const nowMs = Date.now() + (offsetRef.current ?? 0);
-    const q = quoteGap(toU(b.spot, b.tick), b.sigma_ppm, e.lo, e.hi, e.win, nowMs, vault.data);
+    const q = quoteGap(toU(b.spot, b.tick), b.sigma_ppm, e.lo, e.hi, e.win, Math.min(nowMs, b.last_sample_ms ?? nowMs), pricing);
     if (!q) return setLine("Gap too safe for a payout — narrow it or move it off the bird");
     const amount = stakeRef.current;
     const opt: Position = {
       id: -Math.random(), band_lo: e.lo, band_hi: e.hi, window_idx: e.win, price_lo: "", price_hi: "",
       window_start_ms: e.win * WINDOW_MS, window_end_ms: (e.win + 1) * WINDOW_MS,
-      placed_at_ms: nowMs, quote_bps: q, stake: amount, session_id: 1, status: "Open",
+      placed_at_ms: nowMs, quote_bps: q, stake: amount, session_id: tid ?? 1, status: "Open",
     };
     pending.current.push(opt);
     e.win += 1;
     rerender();
     try {
-      opt.id = await call<number>(session, "place", {
-        band_lo: opt.band_lo, band_hi: opt.band_hi, window_idx: opt.window_idx,
-        min_quote_bps: Math.floor(q * 0.85), stake: amount,
-      });
+      const where = { band_lo: opt.band_lo, band_hi: opt.band_hi, window_idx: opt.window_idx, min_quote_bps: Math.floor(q * 0.85) };
+      opt.id = await call<number>(session, tid != null ? "place_chips" : "place", tid != null ? { ...where, session_id: tid, chips: amount } : { ...where, stake: amount });
       qc.invalidateQueries({ queryKey: ["account"] });
+      qc.invalidateQueries({ queryKey: ["tourney"] });
     } catch (err) {
       pending.current = pending.current.filter((p) => p !== opt);
       setLine(reason(err));
@@ -306,13 +330,15 @@ export default function Game() {
     }
   };
 
-  const inflight = pending.current.filter((p) => p.id < 0).reduce((a, p) => a + p.stake, 0);
+  const sess = tid ?? 1;
+  const inflight = pending.current.filter((p) => p.id < 0 && p.session_id === sess).reduce((a, p) => a + p.stake, 0);
   // Pipes the bird already decided but the chain hasn't settled yet pay out on screen at once.
   const decided = [...serverPos.current, ...pending.current.filter((p) => p.id >= 0)]
-    .filter((p) => p.status === "Open")
+    .filter((p) => p.status === "Open" && p.session_id === sess)
     .reduce((a, p) => a + (shown.current.get(keyOf(p)) === "Won" ? payOf(p) : shown.current.get(keyOf(p)) === "Refunded" ? p.stake : 0), 0);
-  const shownBal = balance.data == null ? null : balance.data - inflight + decided;
-  const broke = session != null && shownBal != null && shownBal < STAKES[0]!;
+  const base = tid != null ? myRow?.chips : balance.data;
+  const shownBal = base == null ? null : base - inflight + decided;
+  const broke = tid == null && session != null && shownBal != null && shownBal < STAKES[0]!;
   const money = async (f: () => Promise<unknown>) => {
     if (!session) return;
     setBusy(true);
@@ -327,7 +353,10 @@ export default function Game() {
   };
   const offline = board.isError && !board.data;
   const b = boardRef.current, e = edit.current;
-  const liveQ = b?.spot && !Number.isNaN(e.lo) ? quoteGap(toU(b.spot, b.tick), b.sigma_ppm, e.lo, e.hi, e.win, Date.now() + (offsetRef.current ?? 0), vault.data) : null;
+  const chainNow = Date.now() + (offsetRef.current ?? 0);
+  const pipesLeft = !tWinRef.current || e.win <= tWinRef.current.hi;
+  const liveQ = b?.spot && !Number.isNaN(e.lo) && pipesLeft ? quoteGap(toU(b.spot, b.tick), b.sigma_ppm, e.lo, e.hi, e.win, Math.min(chainNow, b.last_sample_ms ?? Infinity), pricing) : null;
+  const mineHere = [...pending.current, ...serverPos.current].filter((p) => p.session_id === sess);
 
   return (
     <main className="game">
@@ -340,6 +369,16 @@ export default function Game() {
           ))}
         </div>
       )}
+      {mounted && (
+        <div className="corner">
+          <button aria-label="Leaderboard" title="Leaderboard" onClick={() => setSheet("leaders")}>🏆</button>
+          <button aria-label="Tournaments" title="Play friends" onClick={() => setSheet("tourneys")}>⚔︎</button>
+        </div>
+      )}
+      {tour && (
+        <TourneyBar t={tour} now={chainNow} me={acct} session={session} onLeave={() => openTourney(null)}
+          onJoined={() => qc.invalidateQueries({ queryKey: ["tourney"] })} needSession={() => setLine("Play as guest or connect a wallet first")} />
+      )}
       <canvas
         ref={canvasRef}
         className="board"
@@ -351,19 +390,19 @@ export default function Game() {
       <div className="line" aria-live="polite">
         {offline ? "Board offline, retrying…" : line || (!session ? (
           <button className="link" disabled={busy} onClick={() => start(playAsGuest)}>{skin.copy.guest}</button>
-        ) : serverPos.current.length + pending.current.length === 0 ? skin.copy.hint : "")}
+        ) : mineHere.length === 0 ? skin.copy.hint : "")}
       </div>
 
       <section className={`drawer${drawer ? " open" : ""}`}>
         <button className="handle" aria-label="Your trades" onClick={() => setDrawer(!drawer)}><i /></button>
-        <h2>Your trades</h2>
+        <h2>{tid != null ? `Your tournament #${tid} trades` : "Your trades"}</h2>
         <ol className="trades">
-          {[...pending.current, ...serverPos.current].slice(0, 12).map((p) => {
+          {mineHere.slice(0, 12).map((p) => {
             const st = p.status !== "Open" ? p.status : shown.current.get(keyOf(p)) ?? "Open";
-            const res = st === "Won" ? usd(payOf(p) - p.stake, true) : st === "Lost" ? usd(-p.stake, true) : st === "Refunded" ? "refunded" : "open";
+            const res = st === "Won" ? fmt(payOf(p) - p.stake, true) : st === "Lost" ? fmt(-p.stake, true) : st === "Refunded" ? "refunded" : "open";
             return (
               <li key={p.id} className={st.toLowerCase()}>
-                <span>{usd(p.stake)} · {mult(p.quote_bps)} · {p.band_hi - p.band_lo + 1}-band gap</span>
+                <span>{fmt(p.stake)} · {mult(p.quote_bps)} · {p.band_hi - p.band_lo + 1}-band gap</span>
                 <b>{res}</b>
               </li>
             );
@@ -386,26 +425,32 @@ export default function Game() {
 
       <nav className="bar">
         <div className="chips">
-          <b>{shownBal == null ? "—" : usd(shownBal)}</b>
-          <span>{mounted && FIXTURE ? "demo" : "balance"}</span>
+          <b>{shownBal == null ? "—" : fmt(shownBal)}</b>
+          <span>{tid != null ? "points" : mounted && FIXTURE ? "demo" : "balance"}</span>
         </div>
         <div className="stakes" role="radiogroup" aria-label="Stake">
           {STAKES.map((v) => (
             <button key={v} role="radio" aria-checked={stake === v} className={stake === v ? "on" : ""} onClick={() => setStake(v)}>
-              {v < 1000 ? `${v / 10}¢` : usd(v).replace(".00", "")}
+              {tid != null ? (v < 1000 ? v : "1k") : v < 1000 ? `${v / 10}¢` : usd(v).replace(".00", "")}
             </button>
           ))}
         </div>
         {session && broke ? (
           <button className="play" disabled={busy} onClick={() => money(() => deposit(session))}>{busy ? "…" : `Deposit ${usd(DEPOSIT_MUSD)}`}</button>
         ) : session ? (
-          <button className="play" disabled={!liveQ} onClick={drop}>
+          <button className="play" disabled={!liveQ || (tid != null && !myRow)} onClick={drop}>
             {liveQ ? `Drop ${mult(liveQ)}` : "Drop"}
           </button>
         ) : (
           <button className="play" disabled={busy} onClick={() => start(playWithWallet)}>{busy ? "…" : skin.copy.play}</button>
         )}
       </nav>
+
+      <Onboarding hasSession={!!session} onGuest={() => start(playAsGuest)} onWallet={() => start(playWithWallet)} onDemo={() => !FIXTURE && setMode("demo")} />
+      {sheet === "leaders" && <Leaderboard me={acct} onClose={() => setSheet(null)} />}
+      {sheet === "tourneys" && (
+        <Tournaments session={session} onOpen={openTourney} onClose={() => setSheet(null)} needSession={() => (setSheet(null), setLine("Play as guest or connect a wallet first"))} />
+      )}
     </main>
   );
 }
