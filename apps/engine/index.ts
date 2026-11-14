@@ -38,7 +38,8 @@ function account(id: string, envName: string): Account {
 
 const engine = account(`${PREFIX}-engine.testnet`, "ENGINE_KEY");
 const bot = account(`${PREFIX}-bot.testnet`, "BOT_KEY");
-const npcs = [1, 2, 3].map((i) => account(`${PREFIX}-npc${i}.testnet`, `NPC${i}_KEY`));
+// NPC keys are only needed when NPCs run (NPCS=1), so a hosted engine needs just ENGINE_KEY + BOT_KEY.
+const npcs = env.NPCS === "1" ? [1, 2, 3].map((i) => account(`${PREFIX}-npc${i}.testnet`, `NPC${i}_KEY`)) : [];
 
 const view = <T>(contractId: string, method: string, args: Record<string, unknown> = {}) =>
   provider.callFunction({ contractId, method, args }) as Promise<T>;
