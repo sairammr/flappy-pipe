@@ -14,9 +14,10 @@ const REF = "ref-finance-101.testnet";
 // Contract markets (see `markets()`): each is a Rhea pool with wNEAR as amounts[0].
 // `size` scales the bot's swaps to the pool's depth so every market moves a few bps a swap.
 const MARKETS = [
-  { id: 0, pool: 0, a: "wrap.testnet", b: "rft.tokenfactory.testnet", size: 1 }, // ~1500 wNEAR deep
-  { id: 1, pool: 275, a: "wrap.testnet", b: "elixir.thegame.testnet", size: 0.12 }, // ~177 wNEAR
-  { id: 2, pool: 274, a: "wrap.testnet", b: "gold.thegame.testnet", size: 0.05 }, // ~70 wNEAR
+  // each pool gets a swap every ~5 s, so swaps are 2x the single-pool size to keep the birds lively
+  { id: 0, pool: 0, a: "wrap.testnet", b: "rft.tokenfactory.testnet", size: 2 }, // ~1500 wNEAR deep
+  { id: 1, pool: 275, a: "wrap.testnet", b: "elixir.thegame.testnet", size: 0.24 }, // ~177 wNEAR
+  { id: 2, pool: 274, a: "wrap.testnet", b: "gold.thegame.testnet", size: 0.1 }, // ~70 wNEAR
 ];
 const PORT = Number(env.PORT ?? 8787);
 const ALWAYS_ON = env.ALWAYS_ON === "1";
