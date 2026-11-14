@@ -53,12 +53,18 @@ Deadline 2026-11-14 23:59 UTC. Testnet only (user decision). `[x]` only when ver
 - [x] Engine under public RPC limits (bot balance cache, NPCs off)
 - [x] Verified: ELIXIR drops placed + won, tournament created from page → lobby on GOLD, demo deposit/cash out, 0 page errors
 
+## 6c. Demo readiness (19:50 UTC)
+- [x] Fresh-player run on live testnet: onboarding → guest funded 7 s → Drop → settle → cash out, 0 page errors
+- [x] Fixed: "Funding your $10…" instead of a premature Deposit button; Drop button clamped on the board; wallet RPC; verify tracks its own position
+- [x] Dev server default is Live (was started with the demo flag)
+- [x] 31 contract tests, board.check, tsc, `bun run verify` (Won, #741)
+
 ## 7. Ship
 - [x] Git repo with history, pushed to private `sairammr/riptide`
 - [x] README (do X → see Y, accounts, tx links, third-party + AI disclosure, risks)
 - [x] Pitch deck (Slides artifact)
 - [ ] Host web (Vercel) + engine (always-on box) — needs the human's accounts
-- [ ] Top up engine account (~8.9 NEAR, 1.25 per guest) + vault
-- [ ] Wallet sign-in test (Meteor/Intear) — human
-- [ ] Demo video + X post — human
+- [x] Top up: engine 30 NEAR, bot 10.9 NEAR (faucet accounts fund3–6); engine idles when nobody plays
+- [x] Wallet sign-in via near-connect (NEAR CLI wallet, scripted): key added, $1 deposit, silent Drop (txs in README). Meteor/Intear UI not tried
+- [x] Demo video: Remotion, 88 s, real testnet recordings (video/). [ ] Soniox voiceover (needs key) [ ] X post — human
 - [ ] Make repo public + submit — human confirms
