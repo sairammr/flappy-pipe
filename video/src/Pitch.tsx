@@ -3,7 +3,7 @@ import { loadFont as loadDM } from "@remotion/google-fonts/DMSans";
 import { Audio, Video } from "@remotion/media";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
-import { AbsoluteFill, Easing, Img, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Easing, Img, Sequence, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 
 import durations from "./durations.json";
 import { FADE, FPS, PAD, SCENES, type Scene } from "./script";
@@ -376,10 +376,56 @@ const Close: React.FC = () => {
   );
 };
 
+// ---- sound ---------------------------------------------------------------------
+// Flappy Bird effects (samuelcust/flappy-bird-assets, MIT) + remotion.media UI sounds, placed
+// on the moments each scene animates; music is scripts/gen-music.ts (original).
+type Hit = { at: number; s: string; v?: number };
+const sec = (s: Scene) => sceneFrames(s) / FPS;
+const passAt = (id: string, x: number) => ((x - 0.05) / 0.94) * sec(SCENES.find((s) => s.id === id)!);
+const SFX: Record<string, Hit[]> = {
+  cold: [{ at: 0.3, s: "point.wav" }],
+  problem: [1.2, 3.2, 6.5].map((at) => ({ at, s: "mouse-click.wav", v: 0.5 })),
+  solution: [
+    ...[3.5, 5.2, 6.8].map((at) => ({ at, s: "switch.wav", v: 0.45 })),
+    { at: passAt("solution", 0.38), s: "point.wav" },
+    { at: passAt("solution", 0.58), s: "hit.wav" },
+    { at: passAt("solution", 0.78), s: "point.wav" },
+  ],
+  // the real taps, wins and the hit in the recording, mapped through the scene's 1.35x speed
+  demo: [
+    ...[0.7, 3.3, 5.9, 8.9].map((at) => ({ at, s: "wing.wav", v: 0.6 })),
+    ...[11.85, 18.5, 22.95].map((at) => ({ at, s: "point.wav" })),
+    { at: 27.2, s: "hit.wav" },
+    { at: 27.45, s: "die.wav", v: 0.6 },
+  ],
+  fair: [{ at: 3.4, s: "switch.wav", v: 0.5 }, { at: 8, s: "ding.wav", v: 0.35 }],
+  near: [...[0.2, 0.6, 1.0].map((at) => ({ at, s: "mouse-click.wav", v: 0.45 })), ...[2.5, 5.5, 9.5, 13].map((at) => ({ at, s: "switch.wav", v: 0.35 }))],
+  proof: [1.8, 3.0, 4.4].map((at) => ({ at, s: "ding.wav", v: 0.3 })),
+  next: [0.6, 2.2, 3.8].map((at) => ({ at, s: "switch.wav", v: 0.4 })),
+  close: [{ at: 0.3, s: "point.wav" }],
+};
+const Sfx: React.FC<{ id: string; first: boolean }> = ({ id, first }) => (
+  <>
+    {!first && <Audio src={staticFile("sfx/swoosh.wav")} volume={0.35} />}
+    {(SFX[id] ?? []).map((h, i) => (
+      <Sequence key={i} from={Math.round(h.at * FPS)} layout="none">
+        <Audio src={staticFile(`sfx/${h.s}`)} volume={h.v ?? 0.55} />
+      </Sequence>
+    ))}
+  </>
+);
+
 const VIEWS: Record<string, React.FC> = { cold: Cold, problem: Problem, solution: Solution, demo: Demo, fair: Fair, near: Near, multi: Multi, proof: Proof, next: Next, close: Close };
 
-export const Pitch: React.FC = () => (
+export const Pitch: React.FC = () => {
+  const { durationInFrames, fps } = useVideoConfig();
+  return (
   <AbsoluteFill style={{ background: C.ink }}>
+    {/* music bed under the voice: fade in, sit low, fade out */}
+    <Audio
+      src={staticFile("music.mp3")}
+      volume={(f) => 0.11 * interpolate(f, [0, fps, durationInFrames - 2 * fps, durationInFrames], [0, 1, 1, 0], clamp)}
+    />
     <TransitionSeries>
       {SCENES.flatMap((s, i) => {
         const View = VIEWS[s.id]!;
@@ -388,10 +434,12 @@ export const Pitch: React.FC = () => (
             <View />
             <Caption text={s.say} />
             {audio[s.id] ? <Audio src={staticFile(`voiceover/${s.id}.mp3`)} /> : null}
+            <Sfx id={s.id} first={i === 0} />
           </TransitionSeries.Sequence>
         );
         return i === 0 ? [scene] : [<TransitionSeries.Transition key={`t${i}`} presentation={fade()} timing={linearTiming({ durationInFrames: FADE })} />, scene];
       })}
     </TransitionSeries>
   </AbsoluteFill>
-);
+  );
+};
