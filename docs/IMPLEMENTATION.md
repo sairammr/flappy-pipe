@@ -111,14 +111,22 @@ Bigger gap ⇒ higher P ⇒ lower multiplier (Flappy: gap height = payout).
 locally with this formula from `board().sigma_ppm`; the contract recomputes at
 place time and `min_quote_bps` guards the difference.
 
-### Settlement — pass-through (user decision 2026-11-14, replaces touch/B10)
+### Settlement — gate rule (v3, 2026-11-14; replaces pass-through)
 
-The bird must fly THROUGH the gap: take every sample with
-`window_start <= ts <= window_end`. Win iff at least one exists and all are
-inside `[lo, hi)`; any outside ⇒ Lost; none ⇒ Refunded.
+The pipe stands on the window end (the gate). When a sample lands, the
+contract prices every window end it crossed since the previous sample on the
+straight line between the two (the line the bird is drawn on) and stores it
+in `gates[window_idx]` (last 1024 windows). Win iff the gate price is inside
+`[lo, hi)`. No gate price (samples > 10 s apart, or > 1024 windows old) ⇒
+Refunded.
 
+- Why: the pricer computes P(price at window end in gap), so the quoted
+  multiplier is now the fair one (minus edge). Pass-through needed
+  P(all samples inside), which the pricer overstated. Storing the gate at poke
+  time also means a late settle can't turn a loss into a refund.
+- Quote time `t = window_end - last_sample_ts` (not from now).
 - Settleable once a sample with `ts >= window_end` exists.
-- Win credits `stake * quote_bps / 10000` (chips in session 0, mUSD in session 1).
+- Win credits `stake * quote_bps / 10000` (chips in session 0/≥2, mUSD in session 1).
 
 ### Methods
 
@@ -146,10 +154,17 @@ set_config(pool_contract: Option<AccountId>, pool_id: Option<u64>,
            yocto_per_unit: Option<U128>, cash_edge_bps: Option<u32>,
            max_cash_stake: Option<u64>, max_exposure_bps: Option<u32>,
            cash_max_quote_bps: Option<u32>)
-migrate()                               // private, one-shot upgrade (already run 2026-11-14)
+migrate()                               // private, one-shot upgrade v2 -> v3 (run 2026-11-14, tx 7ooWKBU5…)
+// set_config is #[payable] + assert_one_yocto; yocto_per_unit locked after the first deposit
+
+// tournaments (sessions >= 2)
+create_tourney(entry: u64, start_ms: u64, length_ms: u64) -> u64  // entry mUSD <= $10; start within 1 h (rounded up to a window); 1-30 min; host auto-joins
+join_tourney(id: u64)                   // before start; pays entry from balance; stack = 10_000 points
+settle_tourney(id: u64)                 // permissionless after end, once open == 0; pot 50/30/20 by chips, ties split, <2 players refund
 ```
 
-Sessions: `0` = free chips (NPCs), `1` = real money (mUSD).
+Sessions: `0` = free chips (NPCs), `1` = real money (mUSD), `>= 2` = tournaments
+(`place_chips(id, ...)`, only windows fully inside `[start_ms, end_ms]`, edge 0, cap 500x).
 
 ### Views (exact JSON)
 
@@ -173,7 +188,12 @@ positions(account_id): {
 }[]                               // open + last 16 settled, newest first
 settleable(limit: number): number[]
 chips(session_id: number, account_id: string): number | null   // session 1 = mUSD
-leaderboard(session_id: number): { account_id: string, chips: number }[]  // top 20, sorted desc
+leaderboard(session_id: number): { account_id: string, chips: number }[]  // top 20 by balance (first 1000 players)
+leaders(): { account_id, pnl: number, trades, wins, best_bps }[]          // global top 20 by cash P&L (trades + prizes)
+stats(account_id): { pnl, trades, wins, best_bps }
+tourney(id): { id, host, entry, start_ms, end_ms, pot, open, settled,
+               players: { account_id, chips, prize }[] } | null           // players best first
+tourneys_live(): number[]                                                 // unsettled tournament ids
 config(): { owner, pool_contract, pool_id, tick: string, edge_bps }
 balance(account_id): number    // mUSD, 0 if none
 quote(band_lo, band_hi, window_idx, session_id?: number): number | null  // exact on-chain quote now; session defaults 0
@@ -187,7 +207,7 @@ Settled positions beyond the last 16 per account are deleted.
 
 ## Signing (frontend)
 
-Methods a session key may call: `poke, join_free, place, place_chips, settle`
+Methods a session key may call: `place, poke, settle, place_chips, create_tourney, join_tourney, settle_tourney`
 (`deposit`/`withdraw` need attached NEAR, so they go through the wallet).
 See SPEC §6.2. Contract id read from `NEXT_PUBLIC_CONTRACT_ID`
 (default `riptide-6024.testnet`), RPC `https://rpc.testnet.fastnear.com`.
@@ -198,7 +218,7 @@ One Bun process, keys from `~/.near-credentials` locally or
 `ENGINE_KEY`/`BOT_KEY`/`NPC{1,2,3}_KEY` env vars when hosted.
 
 1. `poke()` every 1 s (engine account).
-2. `settle(settleable(50))` every 2 s.
+2. `settle(settleable(50))` every 2 s, then `settle_tourney(id)` for every `tourneys_live()` past its bell with `open == 0`.
 3. Swap bot: every ~2 s, swap 0.1–0.4 wNEAR ↔ RFT on pool 0 via
    `ft_transfer_call` to `ref-finance-101.testnet`, direction biased back
    toward an anchor price (mean-reverting random walk).
