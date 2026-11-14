@@ -216,7 +216,7 @@ const Fair: React.FC = () => {
     <AbsoluteFill style={{ background: C.ink, padding: "110px 140px" }}>
       <Kicker>FAIR BY CONSTRUCTION</Kicker>
       <Title size={68}>The multiplier prices exactly what you win on</Title>
-      <svg width={1640} height={560} style={{ position: "absolute", left: 140, top: 330 }}>
+      <svg width={1640} height={560} style={{ position: "absolute", left: 140, top: 350 }}>
         <rect x={0} y={0} width={W} height={520} rx={24} fill={C.ink2} />
         <g opacity={gate}>
           <rect x={gx - 22} y={0} width={44} height={gy - 55} fill={C.pipe} stroke={C.line} strokeWidth={3} />
@@ -238,7 +238,7 @@ const Fair: React.FC = () => {
           <text x={1430} y={258} fontFamily={HEAD} fontSize={44} fontWeight={700} fill={C.sun}>P = 36%</text>
         </g>
       </svg>
-      <div style={{ position: "absolute", left: 140, top: 880, opacity: formula, fontFamily: HEAD, fontSize: 50, color: C.cream }}>
+      <div style={{ position: "absolute", left: 140, top: 262, opacity: formula, fontFamily: HEAD, fontSize: 46, color: C.cream }}>
         multiplier = <span style={{ color: C.sun }}>1 / P</span> minus a 3% edge → <span style={{ color: C.sun }}>2.7x</span>
       </div>
     </AbsoluteFill>
