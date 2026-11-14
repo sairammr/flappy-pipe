@@ -13,6 +13,10 @@ export type Tourney = {
 
 export const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ID || "riptide-6024.testnet";
 export const RPC = process.env.NEXT_PUBLIC_RPC_URL || "https://rpc.testnet.fastnear.com";
+// Public testnet RPCs rate-limit per IP (a 429 has no CORS header, so the browser sees a
+// network error); fail over in order, starting from the last one that answered.
+const RPCS = [RPC, "https://test.rpc.fastnear.com", "https://near-testnet.drpc.org", "https://rpc.testnet.near.org"].filter((u, i, a) => a.indexOf(u) === i);
+let good = 0;
 export const ENGINE = process.env.NEXT_PUBLIC_ENGINE_URL || "";
 // Modes: "demo" = local simulator with a pretend $10, no chain, no wallet; "live" = real testnet
 // NEAR in the contract (deposit $10, trade, withdraw). Picked at runtime, remembered per browser.
@@ -39,16 +43,24 @@ const GAS = BigInt(30e12);
 
 // The public RPC is load-balanced over nodes at slightly different heights, so `block` pins a
 // read to the height another read returned (see api.account).
+async function rpc(body: string) {
+  for (let i = 0; i < RPCS.length; i++) {
+    const k = (good + i) % RPCS.length;
+    try {
+      const res = await fetch(RPCS[k]!, { method: "POST", headers: { "content-type": "application/json" }, body });
+      if (res.status === 429 || res.status >= 500) continue;
+      const j = await res.json();
+      good = k;
+      return j;
+    } catch {}
+  }
+  throw new Error("all RPCs busy");
+}
 async function viewAt<T>(method: string, args: object = {}, block?: number): Promise<{ v: T; height: number }> {
-  const res = await fetch(RPC, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0", id: 1, method: "query",
-      params: { request_type: "call_function", ...(block ? { block_id: block } : { finality: "optimistic" }), account_id: CONTRACT, method_name: method, args_base64: btoa(JSON.stringify(args)) },
-    }),
-  });
-  const j = await res.json();
+  const j = await rpc(JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "query",
+    params: { request_type: "call_function", ...(block ? { block_id: block } : { finality: "optimistic" }), account_id: CONTRACT, method_name: method, args_base64: btoa(JSON.stringify(args)) },
+  }));
   if (j.error || j.result?.error) throw new Error(j.error?.cause?.name || j.result?.error || "rpc error");
   return { v: JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result))), height: j.result.block_height };
 }
@@ -128,11 +140,7 @@ export async function playWithWallet(): Promise<Session> {
 
 async function hasKey(accountId: string, publicKey: string) {
   for (let i = 0; i < 4; i++) {
-    const r = await fetch(RPC, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: { request_type: "view_access_key", finality: "optimistic", account_id: accountId, public_key: publicKey } }),
-    }).then((r) => r.json());
+    const r = await rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: { request_type: "view_access_key", finality: "optimistic", account_id: accountId, public_key: publicKey } })).catch(() => ({}));
     if (r.result && !r.result.error) return true;
     await new Promise((ok) => setTimeout(ok, 1000));
   }
@@ -172,8 +180,9 @@ let account: import("near-api-js").Account | null = null;
 export async function call<T = unknown>(s: Session, method: string, args: object, deposit = 0n): Promise<T> {
   if (FIXTURE) return fx.call(method, args as Record<string, unknown>) as T;
   if (!account || account.accountId !== s.accountId) {
-    const { Account } = await import("near-api-js");
-    account = new Account(s.accountId, RPC, s.key as `ed25519:${string}`);
+    const { Account, FailoverRpcProvider, JsonRpcProvider } = await import("near-api-js");
+    const provider = new FailoverRpcProvider(RPCS.map((url) => new JsonRpcProvider({ url })));
+    account = new Account(s.accountId, provider, s.key as `ed25519:${string}`);
   }
   return account.callFunction<T & {}>({ contractId: CONTRACT, methodName: method, args, gas: GAS, deposit }) as Promise<T>;
 }
