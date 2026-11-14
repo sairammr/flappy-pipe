@@ -261,7 +261,8 @@ export default function Game() {
           const bw = btn.offsetWidth, bh = btn.offsetHeight, floor = g.h - 8;
           const x = Math.max(bw / 2 + 8, Math.min(W - bw / 2 - 8, xOf(g, (e.win + 1) * WINDOW_MS)));
           let y = yOf(g, e.shownLo) + 22;
-          if (y + bh > floor) y = Math.max(8, yOf(g, e.shownHi + 1) - 22 - bh);
+          if (y + bh > floor) y = yOf(g, e.shownHi + 1) - 22 - bh;
+          y = Math.max(64, Math.min(floor - bh, y)); // gap off screen: stay on the board, never below it
           btn.style.transform = `translate(${Math.round(x - bw / 2)}px, ${Math.round(y)}px)`;
           btn.style.visibility = "visible";
         }

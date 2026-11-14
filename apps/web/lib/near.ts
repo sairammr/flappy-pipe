@@ -18,6 +18,9 @@ export const RPC = process.env.NEXT_PUBLIC_RPC_URL || "https://rpc.testnet.fastn
 // network error); fail over in order, starting from the last one that answered.
 const RPCS = [RPC, "https://test.rpc.fastnear.com", "https://near-testnet.drpc.org", "https://rpc.testnet.near.org"].filter((u, i, a) => a.indexOf(u) === i);
 let good = 0;
+// Wallet scripts read these (the NEAR CLI wallet verifies tx hashes here); their default,
+// rpc.testnet.near.org, rate-limits and fails CORS from the sandbox iframe.
+const WALLET_RPC = { mainnet: [] as string[], testnet: RPCS };
 export const ENGINE = process.env.NEXT_PUBLIC_ENGINE_URL || "";
 // Modes: "demo" = local simulator with a pretend $10, no chain, no wallet; "live" = real testnet
 // NEAR in the contract (deposit $10, trade, withdraw). Picked at runtime, remembered per browser.
@@ -118,7 +121,7 @@ export async function playWithWallet(): Promise<Session> {
   const [{ NearConnector }, { KeyPair }] = await Promise.all([import("@hot-labs/near-connect"), import("near-api-js")]);
   const kp = KeyPair.fromRandom("ed25519");
   const publicKey = kp.getPublicKey().toString();
-  const connector = new NearConnector({ network: "testnet", features: { testnet: true, signInWithFunctionCallKey: true } });
+  const connector = new NearConnector({ network: "testnet", providers: WALLET_RPC, features: { testnet: true, signInWithFunctionCallKey: true } });
   const wallet = await connector.connect({
     addFunctionCallKey: {
       contractId: CONTRACT,
@@ -201,7 +204,7 @@ export async function call<T = unknown>(s: Session, method: string, args: object
 // during a trade.
 async function viaWallet(method: string, args: object, deposit: string) {
   const { NearConnector } = await import("@hot-labs/near-connect");
-  const wallet = await new NearConnector({ network: "testnet" }).wallet();
+  const wallet = await new NearConnector({ network: "testnet", providers: WALLET_RPC }).wallet();
   await wallet.signAndSendTransaction({
     receiverId: CONTRACT,
     actions: [{ type: "FunctionCall", params: { methodName: method, args, gas: "30000000000000", deposit } }],
