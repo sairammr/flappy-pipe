@@ -229,7 +229,7 @@ export default function Game() {
         const q = quoteGap(spotU, b.sigma_ppm, e.lo, e.hi, e.win, Math.min(now, b.last_sample_ms ?? now), pricingRef.current);
         for (let w = Math.floor(msAt(g, -colW) / WINDOW_MS); xOf(g, w * WINDOW_MS) < W; w++) {
           if (mine.has(w)) skin.column(ctx, col(w), mine.get(w)!, false, tMs);
-          else if (w === e.win)
+          else if (w === e.win && (!tw || w <= tw.hi))
             skin.column(ctx, col(w), [{
               y: yOf(g, e.shownHi + 1), h: (e.shownHi - e.shownLo + 1) * g.rowH, state: q ? "aim" : "bad",
               label: q ? mult(q) : "—", sub: q ? `win ${fmtRef.current(Math.floor((stakeRef.current * q) / 1e4))}` : "too safe",
