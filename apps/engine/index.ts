@@ -25,7 +25,7 @@ const TGAS = 1_000_000_000_000n;
 
 // Public testnet RPCs rate-limit (fastnear answers 429 under a 1 Hz poke + bots), so fail over.
 const provider = new FailoverRpcProvider(
-  [RPC, "https://test.rpc.fastnear.com", "https://near-testnet.drpc.org", "https://testnet-rpc.intea.rs"].map((url) => new JsonRpcProvider({ url })),
+  [RPC, "https://test.rpc.fastnear.com", "https://near-testnet.drpc.org", "https://rpc.testnet.near.org", "https://testnet-rpc.intea.rs"].map((url) => new JsonRpcProvider({ url })),
 );
 
 function account(id: string, envName: string): Account {
@@ -114,6 +114,12 @@ async function botLoop() {
     if (!anchors.length) await sleep(3000);
   }
   console.log(`bot: anchors ${anchors.join(", ")}`);
+  // Balances are read every 30 swaps or after a failed swap, not every time: public RPCs
+  // rate-limit per IP, and the pool read is the one that matters.
+  const bals = new Map<string, string>();
+  const refresh = async () => {
+    for (const t of new Set(MARKETS.flatMap((m) => [m.a, m.b]))) bals.set(t, await view<string>(t, "ft_balance_of", { account_id: bot.accountId }));
+  };
   for (let k = 0; ; k++) {
     if (!active()) {
       await sleep(5000);
@@ -121,11 +127,9 @@ async function botLoop() {
     }
     const m = MARKETS[k % MARKETS.length]!;
     try {
-      const [pool, balA, balB] = await Promise.all([
-        view<Pool>(REF, "get_pool", { pool_id: m.pool }),
-        view<string>(m.a, "ft_balance_of", { account_id: bot.accountId }),
-        view<string>(m.b, "ft_balance_of", { account_id: bot.accountId }),
-      ]);
+      if (k % 30 === 0 || !bals.size) await refresh();
+      const pool = await view<Pool>(REF, "get_pool", { pool_id: m.pool });
+      const balA = bals.get(m.a) ?? "0", balB = bals.get(m.b) ?? "0";
       const price = poolPrice(pool);
       // Selling wNEAR pushes price (B per wNEAR) down. Lean that way when above the anchor.
       const dev = Math.log(price / anchors[m.id]!);
@@ -142,8 +146,9 @@ async function botLoop() {
       else console.log(`bot: market ${m.id} out of both tokens`);
     } catch (e) {
       console.log("bot:", short(e));
+      bals.clear();
     }
-    await sleep((1500 + Math.random() * 1000) / MARKETS.length);
+    await sleep(1200 + Math.random() * 800); // ~1 swap per 1.6 s across all markets: stays under public RPC limits
   }
 }
 
@@ -248,6 +253,9 @@ console.log(`engine: contract ${CONTRACT}, rpc ${RPC}, http :${PORT}, always_on=
 pokeLoop();
 settleLoop();
 botLoop();
-npcLoop(npcs[0]!, "momentum");
-npcLoop(npcs[1]!, "revert");
-npcLoop(npcs[2]!, "longshot");
+// NPCs play free chips (session 0), which no screen shows any more; they cost RPC calls.
+if (env.NPCS === "1") {
+  npcLoop(npcs[0]!, "momentum");
+  npcLoop(npcs[1]!, "revert");
+  npcLoop(npcs[2]!, "longshot");
+}
