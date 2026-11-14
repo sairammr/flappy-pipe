@@ -33,9 +33,41 @@ const Rise: React.FC<{ delay?: number; children: React.ReactNode; style?: React.
 const Kicker: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <Rise><p style={{ fontFamily: BODY, color: C.sun, fontSize: 28, fontWeight: 700, letterSpacing: 5, margin: 0 }}>{children}</p></Rise>
 );
-const Title: React.FC<{ children: React.ReactNode; size?: number; delay?: number }> = ({ children, size = 76, delay = 4 }) => (
-  <Rise delay={delay}><h2 style={{ fontFamily: HEAD, color: C.cream, fontSize: size, lineHeight: 1.05, margin: "14px 0 0" }}>{children}</h2></Rise>
-);
+/** Title revealed word by word (each word springs up); "\n" breaks the line. */
+const Title: React.FC<{ children: string; size?: number; delay?: number }> = ({ children, size = 76, delay = 4 }) => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  let n = 0;
+  return (
+    <h2 style={{ fontFamily: HEAD, color: C.cream, fontSize: size, lineHeight: 1.08, margin: "14px 0 0" }}>
+      {children.split("\n").map((line, li) => (
+        <div key={li}>
+          {line.split(" ").map((w, wi) => {
+            const k = spring({ frame: f - delay - 3 * n++, fps, config: { damping: 13, stiffness: 160 } });
+            return <span key={wi} style={{ display: "inline-block", marginRight: "0.25em", opacity: Math.min(1, k * 1.5), transform: `translateY(${(1 - k) * 40}px) scale(${0.85 + 0.15 * k})` }}>{w}</span>;
+          })}
+        </div>
+      ))}
+    </h2>
+  );
+};
+
+/** Slow drifting price lines behind the dark scenes. */
+const Backdrop: React.FC = () => {
+  const f = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ background: C.ink }}>
+      <svg width={1920} height={1080} style={{ opacity: 0.09 }}>
+        {[0, 1, 2].map((k) => {
+          const pts: string[] = [];
+          for (let x = -20; x <= 1940; x += 16) pts.push(`${x},${(260 + k * 290 + 60 * Math.sin((x + f * (3 + k)) / (170 + 40 * k)) + 25 * Math.sin((x - f * 2) / 61)).toFixed(1)}`);
+          return <polyline key={k} points={pts.join(" ")} fill="none" stroke={k === 1 ? C.sun : C.sky} strokeWidth={4} />;
+        })}
+        {[...Array(18)].map((_, i) => <circle key={i} cx={(i * 113 + f * (0.6 + (i % 3) * 0.3)) % 1960 - 20} cy={(i * 197) % 1080} r={3 + (i % 3)} fill={C.cream} />)}
+      </svg>
+    </AbsoluteFill>
+  );
+};
 
 /** Bottom caption = the voiceover line, so the video works muted on X. */
 const Caption: React.FC<{ text: string }> = ({ text }) => {
@@ -118,7 +150,7 @@ const Cold: React.FC = () => {
   return (
     <AbsoluteFill style={{ background: C.sky, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 110, paddingBottom: 120 }}>
       <Img src={staticFile("background-day.png")} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", imageRendering: "pixelated", opacity: 0.55 }} />
-      <Phone src="clips/phone.mp4" start={18} rate={1.1} height={800} />
+      <Phone src="clips/phone.mp4" start={27.5} rate={1.1} height={800} />
       <div style={{ width: 800, transform: `scale(${0.85 + 0.15 * pop})`, opacity: pop }}>
         <h1 style={{ fontFamily: HEAD, fontSize: 112, lineHeight: 1, margin: 0, color: C.cream, WebkitTextStroke: `8px ${C.line}`, paintOrder: "stroke" }}>This bird is a live price.</h1>
         <p style={{ fontFamily: BODY, fontWeight: 700, fontSize: 42, margin: "24px 0 0", color: C.ink }}>You bet on where it flies. On NEAR.</p>
@@ -138,9 +170,9 @@ const ProblemCard: React.FC<{ t: number; h: string; p: string; icon: React.React
   );
 };
 const Problem: React.FC = () => (
-  <AbsoluteFill style={{ background: C.ink, padding: "120px 140px" }}>
+  <AbsoluteFill style={{ padding: "120px 140px" }}>
     <Kicker>THE PROBLEM</Kicker>
-    <Title>Tap-trading games are exploding.<br />Nobody can check them.</Title>
+    <Title>{"Tap-trading games are exploding.\nNobody can check them."}</Title>
     <div style={{ display: "flex", gap: 36, marginTop: 70 }}>
       <ProblemCard t={1.2} h="Off-chain house" p="Prices and payouts live on the operator’s servers." icon={<><rect x={14} y={10} width={52} height={22} rx={5} /><rect x={14} y={40} width={52} height={22} rx={5} /><circle cx={26} cy={21} r={3} fill={C.ink} /><circle cx={26} cy={51} r={3} fill={C.ink} /></>} />
       <ProblemCard t={3.2} h="Unverifiable" p="You can’t check a single outcome. You just trust them." icon={<><path d="M10 40 Q40 10 70 40 Q40 70 10 40Z" /><circle cx={40} cy={40} r={9} fill={C.ink} /><line x1={14} y1={68} x2={66} y2={12} stroke={C.hit} strokeWidth={7} strokeLinecap="round" /></>} />
@@ -185,24 +217,51 @@ const Solution: React.FC = () => {
   );
 };
 
-const Demo: React.FC = () => (
-  <AbsoluteFill style={{ background: C.ink, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 120, paddingBottom: 170 }}>
-    <Rise><Phone src="clips/phone.mp4" start={5} rate={1.35} height={780} /></Rise>
-    <div>
-      <Kicker>LIVE ON NEAR TESTNET</Kicker>
-      <div style={{ height: 30 }} />
-      <Notes
-        notes={[
-          { at: 0.5, text: "Tap where the bird will be" },
-          { at: 2.5, text: "Drop — multiplier locks on-chain" },
-          { at: 11.5, text: "Through: +$0.59, paid instantly", color: C.win },
-          { at: 18.5, text: "Again: $10.34 → $11.82", color: C.win },
-          { at: 26.5, text: "Hit the pipe: −$0.10", color: C.hit },
-        ]}
-      />
-    </div>
-  </AbsoluteFill>
-);
+// Real events in clips/phone.mp4 (seconds into the scene at start=1, 1.35x).
+const DEMO_EVENTS = [
+  { at: 14.1, text: "−$0.10", win: false },
+  { at: 16.7, text: "−$0.10", win: false },
+  { at: 21.1, text: "+$0.38", win: true },
+  { at: 24.1, text: "−$0.10", win: false },
+  { at: 28.5, text: "−$0.10", win: false },
+];
+const Demo: React.FC = () => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const t = f / fps;
+  // punch-in on the phone at each result, biggest on the win
+  const punch = DEMO_EVENTS.reduce((a, e) => a + (t >= e.at ? (e.win ? 0.07 : 0.035) * Math.exp(-(t - e.at) * 4) : 0), 0);
+  return (
+    <AbsoluteFill style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 120, paddingBottom: 170 }}>
+      <div style={{ position: "relative", transform: `scale(${1 + punch})` }}>
+        <Rise><Phone src="clips/phone.mp4" start={1} rate={1.35} height={780} /></Rise>
+        {DEMO_EVENTS.map((e) => {
+          const k = spring({ frame: f - Math.round(e.at * fps), fps, config: { damping: 10 } });
+          const life = interpolate(t - e.at, [0, 1.6, 2.2], [1, 1, 0], clamp);
+          if (t < e.at || life <= 0) return null;
+          return (
+            <div key={e.at} style={{ position: "absolute", left: e.win ? -150 : -110, top: 300 - 80 * k, transform: `scale(${0.5 + 0.7 * k}) rotate(${e.win ? -6 : 4}deg)`, opacity: life }}>
+              <p style={{ fontFamily: HEAD, fontSize: e.win ? 110 : 80, margin: 0, color: e.win ? C.win : C.hit, WebkitTextStroke: `7px ${C.line}`, paintOrder: "stroke" }}>{e.text}</p>
+            </div>
+          );
+        })}
+      </div>
+      <div>
+        <Kicker>LIVE ON NEAR TESTNET</Kicker>
+        <div style={{ height: 30 }} />
+        <Notes
+          notes={[
+            { at: 0.4, text: "Tap where the bird will be" },
+            { at: 3.4, text: "Drop — multiplier locks on-chain" },
+            { at: 14.1, text: "Hit the pipe: −$0.10", color: C.hit },
+            { at: 21.1, text: "Through: +$0.38, paid instantly", color: C.win },
+            { at: 24.5, text: "Every result settles on-chain" },
+          ]}
+        />
+      </div>
+    </AbsoluteFill>
+  );
+};
 
 /** How a pipe is priced and settled: samples → line → gate → probability of the gap. */
 const Fair: React.FC = () => {
@@ -213,7 +272,7 @@ const Fair: React.FC = () => {
   const shown = samples.filter((s) => s.x <= 60 + draw * 820);
   const bell = [...Array(61)].map((_, k) => { const y = 60 + k * 7; const z = (y - 245) / 70; return { x: 1180 + 230 * Math.exp((-z * z) / 2), y }; });
   return (
-    <AbsoluteFill style={{ background: C.ink, padding: "110px 140px" }}>
+    <AbsoluteFill style={{ padding: "110px 140px" }}>
       <Kicker>FAIR BY CONSTRUCTION</Kicker>
       <Title size={68}>The multiplier prices exactly what you win on</Title>
       <svg width={1640} height={560} style={{ position: "absolute", left: 140, top: 350 }}>
@@ -275,7 +334,7 @@ const Near: React.FC = () => {
     { at: 13, text: "Guests get a funded sub-account in seconds" },
   ];
   return (
-    <AbsoluteFill style={{ background: C.ink, padding: "110px 120px" }}>
+    <AbsoluteFill style={{ padding: "110px 120px" }}>
       <Kicker>WHY NEAR</Kicker>
       <Title size={68}>The contract is the house, the oracle and the referee</Title>
       <svg width={1680} height={560} style={{ position: "absolute", left: 120, top: 250 }}>
@@ -299,7 +358,7 @@ const Near: React.FC = () => {
 };
 
 const Multi: React.FC = () => (
-  <AbsoluteFill style={{ background: C.ink, alignItems: "center", paddingTop: 70 }}>
+  <AbsoluteFill style={{ alignItems: "center", paddingTop: 70 }}>
     <Kicker>MULTIPLAYER</Kicker>
     <Title size={64}>Share a link. Race on the same pipes.</Title>
     <Rise delay={8} style={{ marginTop: 30 }}>
@@ -320,7 +379,7 @@ const Counter: React.FC<{ to: number; t: number; label: string; suffix?: string 
   );
 };
 const Proof: React.FC = () => (
-  <AbsoluteFill style={{ background: C.ink, padding: "130px 140px" }}>
+  <AbsoluteFill style={{ padding: "130px 140px" }}>
     <Kicker>PROOF, NOT PROMISES</Kicker>
     <Title>Everything here ran on testnet</Title>
     <div style={{ display: "flex", gap: 32, marginTop: 70 }}>
@@ -344,7 +403,7 @@ const Milestone: React.FC<{ t: number; h: string; p: string; arrow: boolean }> =
   );
 };
 const Next: React.FC = () => (
-  <AbsoluteFill style={{ background: C.ink, padding: "130px 140px" }}>
+  <AbsoluteFill style={{ padding: "130px 140px" }}>
     <Kicker>WHAT’S NEXT</Kicker>
     <Title>From testnet game to on-chain arcade</Title>
     <div style={{ display: "flex", gap: 24, marginTop: 80, alignItems: "center" }}>
@@ -359,7 +418,7 @@ const Close: React.FC = () => {
   const f = useCurrentFrame();
   const { durationInFrames } = useVideoConfig();
   return (
-    <AbsoluteFill style={{ background: C.ink, justifyContent: "center", alignItems: "center", paddingBottom: 80 }}>
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", paddingBottom: 80 }}>
       <div style={{ position: "absolute", left: 0, right: 0, top: 40, opacity: 0.5 }}>
         <Flight width={1920} progress={interpolate(f, [0, durationInFrames], [0.2, 1], clamp)} seed={2} color={C.sun} />
       </div>
@@ -376,6 +435,13 @@ const Close: React.FC = () => {
   );
 };
 
+/** Slow camera push across the scene. */
+const Push: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const f = useCurrentFrame();
+  const { durationInFrames } = useVideoConfig();
+  return <AbsoluteFill style={{ transform: `scale(${interpolate(f, [0, durationInFrames], [1, 1.035])})` }}>{children}</AbsoluteFill>;
+};
+
 // ---- sound ---------------------------------------------------------------------
 // Flappy Bird effects (samuelcust/flappy-bird-assets, MIT) + remotion.media UI sounds, placed
 // on the moments each scene animates; music is scripts/gen-music.ts (original).
@@ -383,7 +449,7 @@ type Hit = { at: number; s: string; v?: number };
 const sec = (s: Scene) => sceneFrames(s) / FPS;
 const passAt = (id: string, x: number) => ((x - 0.05) / 0.94) * sec(SCENES.find((s) => s.id === id)!);
 const SFX: Record<string, Hit[]> = {
-  cold: [{ at: 0.3, s: "point.wav" }],
+  cold: [{ at: 1.8, s: "point.wav" }],
   problem: [1.2, 3.2, 6.5].map((at) => ({ at, s: "mouse-click.wav", v: 0.5 })),
   solution: [
     ...[3.5, 5.2, 6.8].map((at) => ({ at, s: "switch.wav", v: 0.45 })),
@@ -391,12 +457,10 @@ const SFX: Record<string, Hit[]> = {
     { at: passAt("solution", 0.58), s: "hit.wav" },
     { at: passAt("solution", 0.78), s: "point.wav" },
   ],
-  // the real taps, wins and the hit in the recording, mapped through the scene's 1.35x speed
+  // the real drops, hits and the win in the recording, mapped through the scene's 1.35x speed
   demo: [
-    ...[0.7, 3.3, 5.9, 8.9].map((at) => ({ at, s: "wing.wav", v: 0.6 })),
-    ...[11.85, 18.5, 22.95].map((at) => ({ at, s: "point.wav" })),
-    { at: 27.2, s: "hit.wav" },
-    { at: 27.45, s: "die.wav", v: 0.6 },
+    ...[1.0, 4.1, 7.1, 10.2].map((at) => ({ at, s: "wing.wav", v: 0.6 })),
+    ...DEMO_EVENTS.flatMap((e) => (e.win ? [{ at: e.at, s: "point.wav", v: 0.7 }] : [{ at: e.at, s: "hit.wav", v: 0.5 }, { at: e.at + 0.25, s: "die.wav", v: 0.35 }])),
   ],
   fair: [{ at: 3.4, s: "switch.wav", v: 0.5 }, { at: 8, s: "ding.wav", v: 0.35 }],
   near: [...[0.2, 0.6, 1.0].map((at) => ({ at, s: "mouse-click.wav", v: 0.45 })), ...[2.5, 5.5, 9.5, 13].map((at) => ({ at, s: "switch.wav", v: 0.35 }))],
@@ -431,7 +495,8 @@ export const Pitch: React.FC = () => {
         const View = VIEWS[s.id]!;
         const scene = (
           <TransitionSeries.Sequence key={s.id} durationInFrames={sceneFrames(s)} name={s.id}>
-            <View />
+            <Backdrop />
+            <Push><View /></Push>
             <Caption text={s.say} />
             {audio[s.id] ? <Audio src={staticFile(`voiceover/${s.id}.mp3`)} /> : null}
             <Sfx id={s.id} first={i === 0} />

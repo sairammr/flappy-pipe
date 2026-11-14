@@ -18,7 +18,7 @@ export const SCENES: Scene[] = [
   {
     id: "demo",
     seconds: 30,
-    say: "Here it is, live on testnet. Through the gap, and you’re paid the instant the bird gets there. Fifty-nine cents. Then forty-four. Hit the pipe, and you lose your dime. No popups. No waiting.",
+    say: "Here it is, live on testnet. Tap, drop, and watch. Hit the pipe, and you lose your dime. Thread the gap, and you’re paid the instant the bird gets there. Thirty-eight cents. No popups. No waiting.",
   },
   {
     id: "fair",

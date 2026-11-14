@@ -22,7 +22,7 @@ it will be when it reaches the next pipe.
 **Play it:** https://flappy-pipe.vercel.app (web on Vercel; the engine that pokes prices, settles
 and creates guest accounts runs on the team's machine behind a tunnel during judging). If the
 board ever says "offline", run it locally (below) — everything it needs is on-chain.
-**Video:** [`docs/riptide-pitch.mp4`](docs/riptide-pitch.mp4) (2 min, voiced) — also attached to the X post.
+**Video:** [`docs/flappy-pipe-pitch.mp4`](docs/flappy-pipe-pitch.mp4) (2 min, voiced) — also attached to the X post.
 
 ## Try it: do X, see Y
 
@@ -143,7 +143,7 @@ Key transactions (`https://testnet.nearblocks.io/txns/<hash>`):
 
 `video/` is a [Remotion](https://remotion.dev) project: animated SVG scenes around real
 screen recordings of the live testnet app (`video/public/clips/`, recorded with Playwright).
-`cd video && npm i && npx remotion render Pitch out/riptide-pitch.mp4`. The voiceover is
+`cd video && npm i && npx remotion render Pitch out/flappy-pipe-pitch.mp4`. The voiceover is
 generated per scene with Soniox TTS (`SONIOX_API_KEY=… bun scripts/voiceover.ts`); captions
 show the same lines, so the video works muted.
 
