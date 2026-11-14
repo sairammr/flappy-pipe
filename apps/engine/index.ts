@@ -244,7 +244,9 @@ Bun.serve({
     const path = new URL(req.url).pathname;
     if (req.method === "OPTIONS") return new Response(null, { headers });
     if (path === "/guest" && req.method === "POST") {
-      const r = await sponsorGuest(req, server.requestIP(req)?.address ?? "?");
+      // Behind a tunnel/proxy every request comes from one local address; use the client's.
+      const ip = req.headers.get("cf-connecting-ip") ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? server.requestIP(req)?.address ?? "?";
+      const r = await sponsorGuest(req, ip);
       for (const [k, v] of Object.entries(headers)) r.headers.set(k, v);
       return r;
     }
