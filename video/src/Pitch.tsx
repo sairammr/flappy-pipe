@@ -427,7 +427,7 @@ const Close: React.FC = () => {
       <Rise delay={16}>
         <div style={{ display: "flex", gap: 20 }}>
           <span style={{ background: C.sun, color: C.ink, fontFamily: BODY, fontWeight: 700, fontSize: 36, padding: "14px 30px", borderRadius: 999 }}>flappy-pipe.vercel.app</span>
-          <span style={{ background: C.cream, color: C.ink, fontFamily: BODY, fontWeight: 700, fontSize: 36, padding: "14px 30px", borderRadius: 999 }}>github.com/sairammr/riptide</span>
+          <span style={{ background: C.cream, color: C.ink, fontFamily: BODY, fontWeight: 700, fontSize: 36, padding: "14px 30px", borderRadius: 999 }}>github.com/sairammr/flappy-pipe</span>
         </div>
       </Rise>
       <Rise delay={24}><p style={{ fontFamily: BODY, color: C.sky, fontSize: 32, fontWeight: 700, margin: "30px 0 0" }}>@NEARProtocol #NEARHackathon</p></Rise>
