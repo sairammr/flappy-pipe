@@ -52,6 +52,29 @@ pub struct Config {
     pub edge_bps: u32,
 }
 
+/// One price feed: a Rhea pool, its band height, its sample ring.
+#[near(serializers = [borsh])]
+#[derive(Clone)]
+pub struct Market {
+    pub label: String,
+    pub pool_contract: AccountId,
+    pub pool_id: u64,
+    pub tick: U128,
+    pub ring: Vec<Sample>,
+    pub head: u32,
+}
+
+#[near(serializers = [json])]
+pub struct MarketView {
+    pub id: u32,
+    pub label: String,
+    pub pool_contract: AccountId,
+    pub pool_id: u64,
+    pub tick: U128,
+    pub spot: Option<U128>,
+    pub last_sample_ms: Option<u64>,
+}
+
 #[near(serializers = [borsh])]
 #[derive(Clone, Copy)]
 pub struct Sample {
@@ -112,6 +135,7 @@ pub struct PositionView {
     pub stake: u64,
     pub session_id: u64,
     pub status: Status,
+    pub market: u32,
 }
 
 #[near(serializers = [json])]
@@ -196,8 +220,7 @@ pub struct TourneyView {
 #[derive(PanicOnDefault)]
 pub struct Riptide {
     config: Config,
-    ring: Vec<Sample>,
-    head: u32,
+    markets: Vec<Market>,
     next_id: u64,
     positions: LookupMap<u64, Position>,
     accts: LookupMap<AccountId, Acct>,
@@ -218,9 +241,11 @@ pub struct Riptide {
     stacks: LookupMap<(u64, AccountId), u64>,
     live: Vec<u64>,
     prizes: LookupMap<(u64, AccountId), u64>,
+    /// position id -> market, for markets other than 0
+    pos_market: LookupMap<u64, u32>,
 }
 
-/// Layout deployed with cash mode (v2); read once by `migrate`.
+/// Layout deployed as v3 (single pool); read once by `migrate`.
 #[near(serializers = [borsh])]
 pub struct OldRiptide {
     config: Config,
@@ -237,6 +262,14 @@ pub struct OldRiptide {
     open_liability: u64,
     cash: LookupMap<AccountId, u64>,
     cash_players: Vector<AccountId>,
+    gates: LookupMap<u64, u128>,
+    stats: LookupMap<AccountId, Stats>,
+    top: Vec<(AccountId, i64)>,
+    tourneys: LookupMap<u64, Tourney>,
+    next_tourney: u64,
+    stacks: LookupMap<(u64, AccountId), u64>,
+    live: Vec<u64>,
+    prizes: LookupMap<(u64, AccountId), u64>,
 }
 
 #[near(serializers = [borsh, json])]
@@ -282,9 +315,8 @@ impl Riptide {
     pub fn new(owner: AccountId, pool_contract: AccountId, pool_id: u64, tick: U128) -> Self {
         require!(tick.0 > 0, "tick must be > 0");
         Self {
-            config: Config { owner, pool_contract, pool_id, tick, edge_bps: 0 },
-            ring: Vec::new(),
-            head: 0,
+            config: Config { owner, pool_contract: pool_contract.clone(), pool_id, tick, edge_bps: 0 },
+            markets: vec![Market { label: "wNEAR/RFT".into(), pool_contract, pool_id, tick, ring: Vec::new(), head: 0 }],
             next_id: 0,
             positions: LookupMap::new(b"p"),
             accts: LookupMap::new(b"a"),
@@ -304,19 +336,21 @@ impl Riptide {
             stacks: LookupMap::new(b"k"),
             live: Vec::new(),
             prizes: LookupMap::new(b"z"),
+            pos_market: LookupMap::new(b"m"),
         }
     }
 
-    /// One-shot upgrade from the v2 (cash) layout. Keeps everything; adds gates, stats,
-    /// tournaments. Open bets settle under the gate rule.
+    /// One-shot upgrade from the v3 (single pool) layout: that pool and its ring become
+    /// market 0; everything else is kept as is.
     #[private]
     #[init(ignore_state)]
     pub fn migrate() -> Self {
         let o: OldRiptide = env::state_read().unwrap_or_else(|| env::panic_str("no old state"));
+        let c = &o.config;
+        let m0 = Market { label: "wNEAR/RFT".into(), pool_contract: c.pool_contract.clone(), pool_id: c.pool_id, tick: c.tick, ring: o.ring, head: o.head };
         Self {
             config: o.config,
-            ring: o.ring,
-            head: o.head,
+            markets: vec![m0],
             next_id: o.next_id,
             positions: o.positions,
             accts: o.accts,
@@ -328,38 +362,42 @@ impl Riptide {
             open_liability: o.open_liability,
             cash: o.cash,
             cash_players: o.cash_players,
-            gates: LookupMap::new(b"g"),
-            stats: LookupMap::new(b"s"),
-            top: Vec::new(),
-            tourneys: LookupMap::new(b"t"),
-            next_tourney: 2,
-            stacks: LookupMap::new(b"k"),
-            live: Vec::new(),
-            prizes: LookupMap::new(b"z"),
+            gates: o.gates,
+            stats: o.stats,
+            top: o.top,
+            tourneys: o.tourneys,
+            next_tourney: o.next_tourney,
+            stacks: o.stacks,
+            live: o.live,
+            prizes: o.prizes,
+            pos_market: LookupMap::new(b"m"),
         }
     }
 
     // ---------- oracle ----------
 
-    pub fn poke(&self) -> PromiseOrValue<()> {
-        if self.last().is_some_and(|l| now_ms() < l.ts_ms + MIN_SAMPLE_GAP_MS) {
+    /// Samples one market's pool (default market 0).
+    pub fn poke(&self, market: Option<u32>) -> PromiseOrValue<()> {
+        let m = market.unwrap_or(0);
+        let mk = self.market(m);
+        if self.last(m).is_some_and(|l| now_ms() < l.ts_ms + MIN_SAMPLE_GAP_MS) {
             return PromiseOrValue::Value(());
         }
-        ext_pool::ext(self.config.pool_contract.clone())
+        ext_pool::ext(mk.pool_contract.clone())
             .with_static_gas(Gas::from_tgas(10))
-            .get_pool(self.config.pool_id)
-            .then(Self::ext(env::current_account_id()).with_static_gas(Gas::from_tgas(10)).on_pool())
+            .get_pool(mk.pool_id)
+            .then(Self::ext(env::current_account_id()).with_static_gas(Gas::from_tgas(10)).on_pool(m))
             .into()
     }
 
     #[private]
-    pub fn on_pool(&mut self, #[callback_result] pool: Result<PoolInfo, PromiseError>) -> bool {
+    pub fn on_pool(&mut self, market: u32, #[callback_result] pool: Result<PoolInfo, PromiseError>) -> bool {
         let Ok(pool) = pool else { return false };
         if pool.amounts.len() < 2 {
             return false;
         }
         match pool_price(pool.amounts[0].0, pool.amounts[1].0) {
-            Some(p) => self.record(now_ms(), p),
+            Some(p) => self.record(market, now_ms(), p),
             None => false,
         }
     }
@@ -388,7 +426,10 @@ impl Riptide {
         window_idx: u64,
         min_quote_bps: u32,
         chips: u64,
+        market: Option<u32>,
     ) -> u64 {
+        let m = market.unwrap_or(0);
+        require!((m as usize) < self.markets.len(), "unknown market");
         let max = if session_id == 1 { self.cash_cfg.max_cash_stake } else { MAX_CHIPS_PER_TAP };
         if session_id >= 2 {
             let t = self.tourneys.get(&session_id).unwrap_or_else(|| env::panic_str("unknown session"));
@@ -402,9 +443,9 @@ impl Riptide {
         let now = now_ms();
         let w0 = now / WINDOW_MS + 1;
         require!(window_idx >= w0 && window_idx < w0 + COLUMNS, "window not placeable");
-        let last = self.last().unwrap_or_else(|| env::panic_str("no price yet"));
+        let last = self.last(m).unwrap_or_else(|| env::panic_str("no price yet"));
         require!(now <= last.ts_ms + STALE_MS, "price stale");
-        let (lo, hi, q) = self.range_quote(session_id, last, band_lo, band_hi, window_idx, now);
+        let (lo, hi, q) = self.range_quote(m, session_id, last, band_lo, band_hi, window_idx, now);
         require!(q >= MIN_QUOTE_BPS && q >= min_quote_bps, "quote below minimum");
         if session_id == 1 {
             let payout = chips * q as u64 / 10_000;
@@ -441,18 +482,23 @@ impl Riptide {
         acct.open.push(id);
         self.accts.insert(who, acct);
         self.open.insert(id);
+        if m > 0 {
+            self.pos_market.insert(id, m);
+        }
         id
     }
 
     /// Permissionless. Unknown, already-settled and not-yet-settleable ids are skipped.
     pub fn settle(&mut self, position_ids: Vec<u64>) {
-        let Some(last) = self.last() else { return };
+        let lasts: Vec<Option<u64>> = (0..self.markets.len() as u32).map(|m| self.last(m).map(|l| l.ts_ms)).collect();
         for id in position_ids {
             let Some(p) = self.positions.get(&id) else { continue };
             if p.status != Status::Open {
                 continue;
             }
-            let Some(outcome) = outcome(self.gates.get(&p.window_idx).copied(), last.ts_ms, p) else { continue };
+            let m = self.pos_market.get(&id).copied().unwrap_or(0);
+            let Some(last_ts) = lasts[m as usize] else { continue };
+            let Some(outcome) = outcome(self.gates.get(&gate_key(m, p.window_idx)).copied(), last_ts, p) else { continue };
             let mut p = p.clone();
             p.status = outcome;
             let payout = p.stake * p.quote_bps as u64 / 10_000;
@@ -506,8 +552,8 @@ impl Riptide {
     // ---------- real money (session 1). Unit = mUSD = $0.001 ----------
 
     /// Player-facing trade: session 1, stake in mUSD. Non-payable (session-key callable).
-    pub fn place(&mut self, band_lo: i64, band_hi: i64, window_idx: u64, min_quote_bps: u32, stake: u64) -> u64 {
-        self.place_chips(1, band_lo, band_hi, window_idx, min_quote_bps, stake)
+    pub fn place(&mut self, band_lo: i64, band_hi: i64, window_idx: u64, min_quote_bps: u32, stake: u64, market: Option<u32>) -> u64 {
+        self.place_chips(1, band_lo, band_hi, window_idx, min_quote_bps, stake, market)
     }
 
     /// mUSD balance, 0 if none.
@@ -726,14 +772,17 @@ impl Riptide {
             c.cash_max_quote_bps = v;
         }
         if let Some(v) = pool_contract {
-            self.config.pool_contract = v;
+            self.config.pool_contract = v.clone();
+            self.markets[0].pool_contract = v;
         }
         if let Some(v) = pool_id {
             self.config.pool_id = v;
+            self.markets[0].pool_id = v;
         }
         if let Some(v) = tick {
             require!(v.0 > 0, "tick must be > 0");
             self.config.tick = v;
+            self.markets[0].tick = v;
         }
         if let Some(v) = edge_bps {
             require!(v < 10_000, "edge too high");
@@ -741,14 +790,35 @@ impl Riptide {
         }
     }
 
+    /// Owner adds a market (another pool). Bets on it share balances, vault and caps.
+    #[payable]
+    pub fn add_market(&mut self, label: String, pool_contract: AccountId, pool_id: u64, tick: U128) -> u32 {
+        near_sdk::assert_one_yocto();
+        require!(env::predecessor_account_id() == self.config.owner, "owner only");
+        require!(tick.0 > 0 && label.len() <= 32 && self.markets.len() < 16, "bad market");
+        self.markets.push(Market { label, pool_contract, pool_id, tick, ring: Vec::new(), head: 0 });
+        self.markets.len() as u32 - 1
+    }
+
     // ---------- views ----------
 
-    pub fn board(&self) -> BoardView {
+    pub fn markets(&self) -> Vec<MarketView> {
+        (0..self.markets.len() as u32)
+            .map(|m| {
+                let mk = &self.markets[m as usize];
+                let last = self.last(m);
+                MarketView { id: m, label: mk.label.clone(), pool_contract: mk.pool_contract.clone(), pool_id: mk.pool_id, tick: mk.tick, spot: last.map(|l| U128(l.price)), last_sample_ms: last.map(|l| l.ts_ms) }
+            })
+            .collect()
+    }
+
+    pub fn board(&self, market: Option<u32>) -> BoardView {
+        let m = market.unwrap_or(0);
         let now = now_ms();
-        let samples = self.samples();
-        let s5 = self.sigma5_sq();
+        let samples = self.samples(m);
+        let s5 = self.sigma5_sq(m);
         let last = samples.last().copied();
-        let tick = self.config.tick.0;
+        let tick = self.market(m).tick.0;
         let band0 = last.map(|s| (s.price / tick) as i64).unwrap_or(0);
         let window0 = now / WINDOW_MS + 1;
         BoardView {
@@ -757,7 +827,7 @@ impl Riptide {
             last_sample_ms: last.map(|s| s.ts_ms),
             sigma_bps: (s5.isqrt() / 100) as u32,
             sigma_ppm: s5.isqrt() as u64,
-            tick: self.config.tick,
+            tick: self.market(m).tick,
             band0,
             window0,
             samples: samples[samples.len().saturating_sub(BOARD_SAMPLES)..]
@@ -787,18 +857,22 @@ impl Riptide {
                     stake: p.stake,
                     session_id: p.session_id,
                     status: p.status,
+                    market: self.pos_market.get(&id).copied().unwrap_or(0),
                 })
             })
             .collect()
     }
 
     pub fn settleable(&self, limit: u32) -> Vec<u64> {
-        let Some(last) = self.last() else { return vec![] };
+        let lasts: Vec<u64> = (0..self.markets.len() as u32).map(|m| self.last(m).map_or(0, |l| l.ts_ms)).collect();
         // ponytail: linear scan of the open set, capped; index by window if open count grows past ~500
         self.open
             .iter()
             .take(SETTLEABLE_SCAN)
-            .filter(|id| self.positions.get(id).is_some_and(|p| last.ts_ms >= p.window_end_ms()))
+            .filter(|id| {
+                let m = self.pos_market.get(id).copied().unwrap_or(0) as usize;
+                self.positions.get(id).is_some_and(|p| lasts[m] >= p.window_end_ms())
+            })
             .take(limit as usize)
             .copied()
             .collect()
@@ -826,15 +900,19 @@ impl Riptide {
     }
 
     /// Current quote for a gap, or null if not placeable right now.
-    pub fn quote(&self, band_lo: i64, band_hi: i64, window_idx: u64, session_id: Option<u64>) -> Option<u32> {
+    pub fn quote(&self, band_lo: i64, band_hi: i64, window_idx: u64, session_id: Option<u64>, market: Option<u32>) -> Option<u32> {
         let session_id = session_id.unwrap_or(0);
+        let m = market.unwrap_or(0);
+        if m as usize >= self.markets.len() {
+            return None;
+        }
         let now = now_ms();
         let w0 = now / WINDOW_MS + 1;
-        let last = self.last().filter(|l| now <= l.ts_ms + STALE_MS)?;
+        let last = self.last(m).filter(|l| now <= l.ts_ms + STALE_MS)?;
         if session_id > 1 && !self.tourneys.contains_key(&session_id) || window_idx < w0 || window_idx >= w0 + COLUMNS || band_lo < 0 || band_lo > band_hi || band_hi - band_lo >= MAX_GAP_BANDS {
             return None;
         }
-        let q = self.range_quote(session_id, last, band_lo, band_hi, window_idx, now).2;
+        let q = self.range_quote(m, session_id, last, band_lo, band_hi, window_idx, now).2;
         (q >= MIN_QUOTE_BPS).then_some(q)
     }
 
@@ -886,10 +964,11 @@ impl Riptide {
             .then(Self::ext(env::current_account_id()).with_static_gas(Gas::from_tgas(5)).on_withdraw(to, units, vault))
     }
 
-    fn range_quote(&self, session_id: u64, last: Sample, band_lo: i64, band_hi: i64, window_idx: u64, now: u64) -> (u128, u128, u32) {
+    #[allow(clippy::too_many_arguments)]
+    fn range_quote(&self, m: u32, session_id: u64, last: Sample, band_lo: i64, band_hi: i64, window_idx: u64, now: u64) -> (u128, u128, u32) {
         require!(band_lo >= 0, "band below zero");
         require!(band_lo <= band_hi && band_hi - band_lo < MAX_GAP_BANDS, "bad gap");
-        let (lo, hi) = (self.band(band_lo).0, self.band(band_hi).1);
+        let (lo, hi) = (self.band(m, band_lo).0, self.band(m, band_hi).1);
         // time from the last known price, not from now: the pool may have moved since
         let t_ms = ((window_idx + 1) * WINDOW_MS).saturating_sub(last.ts_ms.min(now)).max(1);
         let (edge, cap) = if session_id == 1 {
@@ -897,44 +976,50 @@ impl Riptide {
         } else {
             (self.config.edge_bps, MAX_QUOTE_BPS)
         };
-        (lo, hi, quote_bps(last.price, lo, hi, self.sigma5_sq(), t_ms, edge).min(cap))
+        (lo, hi, quote_bps(last.price, lo, hi, self.sigma5_sq(m), t_ms, edge).min(cap))
     }
 
-    fn band(&self, b: i64) -> (u128, u128) {
-        let t = self.config.tick.0;
+    fn market(&self, m: u32) -> &Market {
+        self.markets.get(m as usize).unwrap_or_else(|| env::panic_str("unknown market"))
+    }
+
+    fn band(&self, m: u32, b: i64) -> (u128, u128) {
+        let t = self.market(m).tick.0;
         let lo = (b as u128).checked_mul(t).unwrap_or_else(|| env::panic_str("band overflow"));
         (lo, lo.checked_add(t).unwrap_or_else(|| env::panic_str("band overflow")))
     }
 
-    fn last(&self) -> Option<Sample> {
-        if self.ring.len() < RING {
-            self.ring.last().copied()
+    fn last(&self, m: u32) -> Option<Sample> {
+        let mk = self.market(m);
+        if mk.ring.len() < RING {
+            mk.ring.last().copied()
         } else {
-            Some(self.ring[(self.head as usize + RING - 1) % RING])
+            Some(mk.ring[(mk.head as usize + RING - 1) % RING])
         }
     }
 
     /// Oldest first.
-    fn samples(&self) -> Vec<Sample> {
-        let h = self.head as usize;
-        if self.ring.len() < RING {
-            self.ring.clone()
+    fn samples(&self, m: u32) -> Vec<Sample> {
+        let mk = self.market(m);
+        let h = mk.head as usize;
+        if mk.ring.len() < RING {
+            mk.ring.clone()
         } else {
-            self.ring[h..].iter().chain(self.ring[..h].iter()).copied().collect()
+            mk.ring[h..].iter().chain(mk.ring[..h].iter()).copied().collect()
         }
     }
 
-    fn sigma5_sq(&self) -> u128 {
-        let s: Vec<(u64, u128)> = self.samples().iter().map(|s| (s.ts_ms, s.price)).collect();
+    fn sigma5_sq(&self, m: u32) -> u128 {
+        let s: Vec<(u64, u128)> = self.samples(m).iter().map(|s| (s.ts_ms, s.price)).collect();
         pricer::sigma5_sq(&s)
     }
 
     /// Records a sample unless within MIN_SAMPLE_GAP of the last (B4).
-    fn record(&mut self, ts_ms: u64, price: u128) -> bool {
-        if self.last().is_some_and(|l| ts_ms < l.ts_ms + MIN_SAMPLE_GAP_MS) {
+    fn record(&mut self, m: u32, ts_ms: u64, price: u128) -> bool {
+        if self.last(m).is_some_and(|l| ts_ms < l.ts_ms + MIN_SAMPLE_GAP_MS) {
             return false;
         }
-        if let Some(prev) = self.last().filter(|l| ts_ms - l.ts_ms <= MAX_GATE_GAP_MS) {
+        if let Some(prev) = self.last(m).filter(|l| ts_ms - l.ts_ms <= MAX_GATE_GAP_MS) {
             // Price every window end crossed since the last sample, on the straight line
             // between the two samples (the line the bird is drawn on).
             let mut end = (prev.ts_ms / WINDOW_MS + 1) * WINDOW_MS;
@@ -942,22 +1027,28 @@ impl Riptide {
                 let (dt, span) = ((end - prev.ts_ms) as u128, (ts_ms - prev.ts_ms) as u128);
                 let at = if price >= prev.price { prev.price + (price - prev.price) * dt / span } else { prev.price - (prev.price - price) * dt / span };
                 let w = end / WINDOW_MS - 1;
-                self.gates.insert(w, at);
+                self.gates.insert(gate_key(m, w), at);
                 if w >= GATES {
-                    self.gates.remove(&(w - GATES));
+                    self.gates.remove(&gate_key(m, w - GATES));
                 }
                 end += WINDOW_MS;
             }
         }
         let s = Sample { ts_ms, price };
-        if self.ring.len() < RING {
-            self.ring.push(s);
+        let mk = &mut self.markets[m as usize];
+        if mk.ring.len() < RING {
+            mk.ring.push(s);
         } else {
-            self.ring[self.head as usize] = s;
-            self.head = ((self.head as usize + 1) % RING) as u32;
+            mk.ring[mk.head as usize] = s;
+            mk.head = ((mk.head as usize + 1) % RING) as u32;
         }
         true
     }
+}
+
+/// Market 0 keeps the v3 keys (plain window index).
+fn gate_key(m: u32, w: u64) -> u64 {
+    ((m as u64) << 40) | w
 }
 
 /// None = not settleable yet. Gate rule: the price where the bird meets the pipe (window
@@ -1053,16 +1144,16 @@ mod tests {
     #[test]
     fn gates_interpolate() {
         let mut c = fresh();
-        c.record(8_000, 100);
-        c.record(12_000, 140); // crosses 10_000 halfway => 120
+        c.record(0, 8_000, 100);
+        c.record(0, 12_000, 140); // crosses 10_000 halfway => 120
         assert_eq!(c.gates.get(&1).copied(), Some(120));
-        c.record(13_000, 90);
-        c.record(15_000, 70); // exactly on the gate
+        c.record(0, 13_000, 90);
+        c.record(0, 15_000, 70); // exactly on the gate
         assert_eq!(c.gates.get(&2).copied(), Some(70));
-        c.record(26_000, 70); // 11 s gap: gates 3 and 4 unpriced
+        c.record(0, 26_000, 70); // 11 s gap: gates 3 and 4 unpriced
         assert!(c.gates.get(&3).is_none() && c.gates.get(&4).is_none());
-        c.record(27_000, 80);
-        c.record(31_000, 120); // crosses 30_000 => 110
+        c.record(0, 27_000, 80);
+        c.record(0, 31_000, 120); // crosses 30_000 => 110
         assert_eq!(c.gates.get(&5).copied(), Some(110));
     }
 
@@ -1078,27 +1169,27 @@ mod tests {
     #[test]
     fn ring_wrap_and_gap() {
         let mut c = fresh();
-        assert!(c.record(1_000, 1));
-        assert!(!c.record(1_799, 2)); // B4
-        assert!(c.record(1_800, 3));
+        assert!(c.record(0, 1_000, 1));
+        assert!(!c.record(0, 1_799, 2)); // B4
+        assert!(c.record(0, 1_800, 3));
         for i in 0..200u64 {
-            c.record(2_800 + i * 1_000, 10 + i as u128);
+            c.record(0, 2_800 + i * 1_000, 10 + i as u128);
         }
-        let v = c.samples();
+        let v = c.samples(0);
         assert_eq!(v.len(), RING);
         assert_eq!(v.last().unwrap().price, 209);
         assert_eq!(v[0].price, 209 - 127);
         assert!(v.windows(2).all(|w| w[1].ts_ms > w[0].ts_ms));
-        assert_eq!(c.last().unwrap().price, 209);
+        assert_eq!(c.last(0).unwrap().price, 209);
     }
 
     /// 10 bps wiggle each second, spot ends mid band 1000.
     fn seeded() -> Riptide {
         let mut c = fresh();
         for i in 0..20u64 {
-            c.record(i * 1_000, if i % 2 == 0 { SPOT } else { SPOT + SPOT / 1000 });
+            c.record(0, i * 1_000, if i % 2 == 0 { SPOT } else { SPOT + SPOT / 1000 });
         }
-        c.record(20_000, SPOT + TICK / 2);
+        c.record(0, 20_000, SPOT + TICK / 2);
         ctx(20_100, 1);
         c.join_free();
         c
@@ -1107,19 +1198,19 @@ mod tests {
     #[test]
     fn place_and_settle_flow() {
         let mut c = seeded();
-        let b = c.board();
+        let b = c.board(None);
         assert_eq!((b.band0, b.window0), (1000, 5));
-        assert_eq!(b.sigma_ppm as u128, c.sigma5_sq().isqrt());
-        let q = c.quote(999, 1001, 5, None).expect("placeable");
-        assert!(c.quote(999, 1005, 5, None).unwrap() < q); // wider = cheaper
-        let id = c.place_chips(0, 999, 1001, 5, q, 500);
+        assert_eq!(b.sigma_ppm as u128, c.sigma5_sq(0).isqrt());
+        let q = c.quote(999, 1001, 5, None, None).expect("placeable");
+        assert!(c.quote(999, 1005, 5, None, None).unwrap() < q); // wider = cheaper
+        let id = c.place_chips(0, 999, 1001, 5, q, 500, None);
         assert_eq!(c.chips(0, accounts(1)), Some(START_CHIPS - 500));
         assert_eq!(c.positions(accounts(1))[0].band_hi, 1001);
-        c.record(25_000, SPOT + TICK);
+        c.record(0, 25_000, SPOT + TICK);
         assert!(c.settleable(10).is_empty());
         c.settle(vec![id, 999]);
         assert_eq!(c.positions(accounts(1))[0].status, Status::Open);
-        c.record(30_000, SPOT + 2 * TICK - 1); // gate 5 = this sample
+        c.record(0, 30_000, SPOT + 2 * TICK - 1); // gate 5 = this sample
         assert_eq!(c.settleable(10), vec![id]);
         c.settle(vec![id]);
         assert_eq!(c.positions(accounts(1))[0].status, Status::Won);
@@ -1134,8 +1225,8 @@ mod tests {
     #[should_panic(expected = "quote below minimum")]
     fn min_quote_guard() {
         let mut c = seeded();
-        let q = c.quote(999, 1001, 5, None).unwrap();
-        c.place_chips(0, 999, 1001, 5, q + 1, 100);
+        let q = c.quote(999, 1001, 5, None, None).unwrap();
+        c.place_chips(0, 999, 1001, 5, q + 1, 100, None);
     }
 
     #[test]
@@ -1144,26 +1235,26 @@ mod tests {
         // flat price => sigma at floor => a 7-band gap around spot is ~certain (B1)
         let mut c = fresh();
         for i in 0..20u64 {
-            c.record(i * 1_000, SPOT + TICK / 2);
+            c.record(0, i * 1_000, SPOT + TICK / 2);
         }
         ctx(19_100, 1);
         c.join_free();
-        assert_eq!(c.quote(997, 1003, 4, None), None);
-        c.place_chips(0, 997, 1003, 4, 0, 100);
+        assert_eq!(c.quote(997, 1003, 4, None, None), None);
+        c.place_chips(0, 997, 1003, 4, 0, 100, None);
     }
 
     #[test]
     #[should_panic(expected = "bad gap")]
     fn gap_width_cap() {
         let mut c = seeded();
-        c.place_chips(0, 996, 1004, 5, 0, 100);
+        c.place_chips(0, 996, 1004, 5, 0, 100, None);
     }
 
     #[test]
     #[should_panic(expected = "bad gap")]
     fn gap_inverted() {
         let mut c = seeded();
-        c.place_chips(0, 1003, 1002, 5, 0, 100);
+        c.place_chips(0, 1003, 1002, 5, 0, 100, None);
     }
 
     #[test]
@@ -1171,14 +1262,14 @@ mod tests {
     fn stale_rejected() {
         let mut c = seeded();
         ctx(25_100, 1);
-        c.place_chips(0, 1003, 1004, 6, 0, 100);
+        c.place_chips(0, 1003, 1004, 6, 0, 100, None);
     }
 
     #[test]
     fn refund_and_pruning() {
         let mut c = seeded();
-        let ids: Vec<u64> = (0..20).map(|_| c.place_chips(0, 1003, 1004, 5, 0, 10)).collect();
-        c.record(31_000, SPOT); // nothing in [25_000, 30_000]
+        let ids: Vec<u64> = (0..20).map(|_| c.place_chips(0, 1003, 1004, 5, 0, 10, None)).collect();
+        c.record(0, 31_000, SPOT); // nothing in [25_000, 30_000]
         c.settle(ids);
         assert_eq!(c.chips(0, accounts(1)), Some(START_CHIPS));
         let pv = c.positions(accounts(1));
@@ -1261,7 +1352,7 @@ mod tests {
     #[should_panic(expected = "vault below liability")]
     fn vault_withdraw_respects_liability() {
         let mut c = cash_seeded();
-        c.place_chips(1, 999, 1001, 5, 0, 1_000);
+        c.place_chips(1, 999, 1001, 5, 0, 1_000, None);
         pay_ctx(20_200, 0, 1);
         c.vault_withdraw(c.vault_units - c.open_liability + 1);
     }
@@ -1277,17 +1368,17 @@ mod tests {
     #[should_panic(expected = "join or deposit first")]
     fn cash_needs_deposit() {
         let mut c = seeded();
-        c.place_chips(1, 999, 1001, 5, 0, 100);
+        c.place_chips(1, 999, 1001, 5, 0, 100, None);
     }
 
     #[test]
     fn cash_quotes() {
         let c = cash_seeded();
-        let (q0, q1) = (c.quote(999, 1001, 5, None).unwrap(), c.quote(999, 1001, 5, Some(1)).unwrap());
+        let (q0, q1) = (c.quote(999, 1001, 5, None, None).unwrap(), c.quote(999, 1001, 5, Some(1), None).unwrap());
         assert!((q1 as u64).abs_diff(q0 as u64 * 9_700 / 10_000) <= 1, "edge 300 bps: {q0} {q1}");
         // far gap: chips quote hits 500x, cash capped at 100x
-        assert_eq!(c.quote(1060, 1060, 5, Some(0)), Some(MAX_QUOTE_BPS));
-        assert_eq!(c.quote(1060, 1060, 5, Some(1)), Some(1_000_000));
+        assert_eq!(c.quote(1060, 1060, 5, Some(0), None), Some(MAX_QUOTE_BPS));
+        assert_eq!(c.quote(1060, 1060, 5, Some(1), None), Some(1_000_000));
     }
 
     #[test]
@@ -1295,22 +1386,22 @@ mod tests {
     fn exposure_cap() {
         let mut c = cash_seeded();
         // cap = 100_000 * 20% = 20_000 units of liability; 1000-unit long shots at 100x = 100_000
-        c.place_chips(1, 1060, 1060, 5, 0, 1_000);
+        c.place_chips(1, 1060, 1060, 5, 0, 1_000, None);
     }
 
     #[test]
     fn vault_conservation() {
         let mut c = cash_seeded();
         let t0 = total(&c);
-        let win = c.place_chips(1, 999, 1001, 5, 0, 1_000);
-        let lose = c.place(1003, 1004, 5, 0, 500);
-        let refund = c.place_chips(1, 999, 1001, 7, 0, 300);
+        let win = c.place_chips(1, 999, 1001, 5, 0, 1_000, None);
+        let lose = c.place(1003, 1004, 5, 0, 500, None);
+        let refund = c.place_chips(1, 999, 1001, 7, 0, 300, None);
         assert_eq!(total(&c), t0);
         assert_eq!(c.balance(accounts(1)), 10_000 - 1_800);
         assert!(c.open_liability > 0);
-        c.record(25_000, SPOT + TICK);
-        c.record(30_000, SPOT + TICK);
-        c.record(41_000, SPOT + TICK); // nothing in [35_000, 40_000]
+        c.record(0, 25_000, SPOT + TICK);
+        c.record(0, 30_000, SPOT + TICK);
+        c.record(0, 41_000, SPOT + TICK); // nothing in [35_000, 40_000]
         c.settle(vec![win, lose, refund]);
         let st: Vec<Status> = [win, lose, refund].iter().map(|i| c.positions.get(i).unwrap().status).collect();
         assert_eq!(st, vec![Status::Won, Status::Lost, Status::Refunded]);
@@ -1325,7 +1416,7 @@ mod tests {
     #[test]
     fn migrate_keeps_everything() {
         let mut c = cash_seeded();
-        let id = c.place_chips(1, 999, 1001, 5, 0, 100);
+        let id = c.place_chips(1, 999, 1001, 5, 0, 100, None);
         c.positions.flush();
         c.accts.flush();
         c.open.flush();
@@ -1334,15 +1425,21 @@ mod tests {
         c.cash.flush();
         c.cash_players.flush();
         let (vault, liab) = (c.vault_units, c.open_liability);
-        let Riptide { config, ring, head, next_id, positions, accts, open, chips, players, cash_cfg, vault_units, open_liability, cash, cash_players, .. } = c;
-        let old = OldRiptide { config, ring, head, next_id, positions, accts, open, chips, players, cash_cfg, vault_units, open_liability, cash, cash_players };
+        c.gates.flush();
+        c.stats.flush();
+        c.tourneys.flush();
+        c.stacks.flush();
+        c.prizes.flush();
+        let Riptide { config, mut markets, next_id, positions, accts, open, chips, players, cash_cfg, vault_units, open_liability, cash, cash_players, gates, stats, top, tourneys, next_tourney, stacks, live, prizes, .. } = c;
+        let m0 = markets.remove(0);
+        let old = OldRiptide { config, ring: m0.ring, head: m0.head, next_id, positions, accts, open, chips, players, cash_cfg, vault_units, open_liability, cash, cash_players, gates, stats, top, tourneys, next_tourney, stacks, live, prizes };
         env::state_write(&old);
         let mut m = Riptide::migrate();
         assert_eq!(m.balance(accounts(1)), 10_000 - 100);
         assert_eq!((m.vault_units, m.open_liability), (vault, liab));
         assert_eq!(m.positions(accounts(1))[0].id, id);
-        m.record(25_000, SPOT);
-        m.record(30_000, SPOT);
+        m.record(0, 25_000, SPOT);
+        m.record(0, 30_000, SPOT);
         m.settle(vec![id]);
         assert_eq!(m.positions(accounts(1))[0].status, Status::Won);
         assert_eq!(m.leaders()[0].account_id, accounts(1));
@@ -1352,13 +1449,13 @@ mod tests {
     #[test]
     fn leaders_ranked_by_pnl() {
         let mut c = cash_seeded();
-        let win = c.place_chips(1, 999, 1001, 5, 0, 100);
+        let win = c.place_chips(1, 999, 1001, 5, 0, 100, None);
         pay_ctx(20_100, 3, NEAR);
         c.deposit();
         ctx(20_100, 3);
-        let lose = c.place(1003, 1004, 5, 0, 200);
-        c.record(25_000, SPOT);
-        c.record(30_000, SPOT);
+        let lose = c.place(1003, 1004, 5, 0, 200, None);
+        c.record(0, 25_000, SPOT);
+        c.record(0, 30_000, SPOT);
         c.settle(vec![win, lose]);
         let l = c.leaders();
         assert_eq!(l.iter().map(|r| r.account_id.clone()).collect::<Vec<_>>(), vec![accounts(1), accounts(3)]);
@@ -1386,13 +1483,13 @@ mod tests {
         assert_eq!(c.balance(accounts(4)), 9_000);
         assert_eq!(c.tourney(id).unwrap().pot, 3_000);
         // acct3 bets on window 5 (gate 30_000) and wins; acct4 loses; acct1 sits out
-        c.record(23_000, SPOT + TICK / 2);
+        c.record(0, 23_000, SPOT + TICK / 2);
         ctx(23_100, 3);
-        let w = c.place_chips(id, 999, 1001, 5, 0, 1_000);
+        let w = c.place_chips(id, 999, 1001, 5, 0, 1_000, None);
         ctx(23_100, 4);
-        let l = c.place_chips(id, 1003, 1004, 5, 0, 1_000);
-        c.record(28_000, SPOT);
-        c.record(30_000, SPOT);
+        let l = c.place_chips(id, 1003, 1004, 5, 0, 1_000, None);
+        c.record(0, 28_000, SPOT);
+        c.record(0, 30_000, SPOT);
         c.settle(vec![w, l]);
         assert_eq!(c.tourney(id).unwrap().open, 0);
         ctx(85_000, 2);
@@ -1420,9 +1517,9 @@ mod tests {
     fn tourney_bet_past_bell() {
         let mut c = cash_seeded();
         let id = c.create_tourney(0, 21_000, 60_000);
-        c.record(80_000, SPOT);
+        c.record(0, 80_000, SPOT);
         ctx(80_100, 1);
-        c.place_chips(id, 999, 1001, 17, 0, 100); // gate 90_000 > bell 85_000
+        c.place_chips(id, 999, 1001, 17, 0, 100, None); // gate 90_000 > bell 85_000
     }
 
     #[test]
@@ -1433,5 +1530,34 @@ mod tests {
         ctx(85_000, 2);
         c.settle_tourney(id);
         assert_eq!(c.balance(accounts(1)), 10_000);
+    }
+
+    #[test]
+    fn second_market_is_separate() {
+        let mut c = cash_seeded();
+        pay_ctx(20_100, 0, 1);
+        let m = c.add_market("B".into(), "pool.testnet".parse().unwrap(), 7, U128(TICK));
+        assert_eq!(m, 1);
+        // market 1 has its own ring: no price there yet
+        assert!(c.quote(999, 1001, 5, Some(1), Some(1)).is_none());
+        for i in 0..20u64 {
+            c.record(1, i * 1_000, if i % 2 == 0 { 2 * SPOT } else { 2 * SPOT + SPOT / 1000 });
+        }
+        c.record(1, 20_000, 2 * SPOT + TICK / 2);
+        ctx(20_100, 1);
+        let b = c.board(Some(1));
+        assert_eq!(b.band0, 2000);
+        let id = c.place(1999, 2001, 5, 0, 100, Some(1));
+        let same_window_m0 = c.place(999, 1001, 5, 0, 100, None);
+        assert_eq!(c.positions(accounts(1))[0].market, 0);
+        assert_eq!(c.positions(accounts(1))[1].market, 1);
+        // market 0 gate inside its gap, market 1 gate outside its gap
+        c.record(0, 25_000, SPOT);
+        c.record(0, 30_000, SPOT);
+        c.record(1, 30_000, 3 * SPOT);
+        c.settle(vec![id, same_window_m0]);
+        assert_eq!(c.positions.get(&id).unwrap().status, Status::Lost);
+        assert_eq!(c.positions.get(&same_window_m0).unwrap().status, Status::Won);
+        assert_eq!(c.markets().len(), 2);
     }
 }
