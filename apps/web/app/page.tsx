@@ -7,6 +7,7 @@ import { type Board, type Geo, LAG_MS, MAX_GAP, type Position, type Pricing, typ
 import Link from "next/link";
 
 import { useAccount, useSession } from "@/lib/hooks";
+import { play, setSound, soundOn, startMusic } from "@/lib/sound";
 import { DEPOSIT_MUSD, FIXTURE, api, call, deposit, ping, playAsGuest, playWithWallet, reason, setMode, withdraw } from "@/lib/near";
 import { Onboarding, TourneyBar, short } from "./sheets";
 import { flappy as skin } from "@/skins/flappy";
@@ -33,6 +34,7 @@ export default function Game() {
   const [mounted, setMounted] = useState(false);
   const [mkt, setMkt] = useState(0); // which market (Rhea pool) the board plays
   const [cashout, setCashout] = useState(false);
+  const [sound, setSoundState] = useState(true);
   const [stake, setStake] = useState(100); // $0.10, Euphoria's default trade
   const [line, setLine] = useState("");
   const [drawer, setDrawer] = useState(false);
@@ -80,6 +82,13 @@ export default function Game() {
   useEffect(() => {
     if (ready && !session && FIXTURE) playAsGuest().then((s) => deposit(s).then(() => setSession(s)));
   }, [ready, session, setSession]);
+  // Sound: remembered preference; music may only start after the first tap anywhere.
+  useEffect(() => {
+    setSoundState(soundOn());
+    const go = () => startMusic();
+    addEventListener("pointerdown", go, { once: true });
+    return () => removeEventListener("pointerdown", go);
+  }, []);
   useEffect(() => {
     ping();
     const t = setInterval(ping, 30_000);
@@ -99,6 +108,7 @@ export default function Game() {
   mktRef.current = mkt;
   const pickMarket = (m: number) => {
     if (m === mkt) return;
+    play("swoosh");
     try {
       localStorage.setItem(MKEY, String(m));
     } catch {}
@@ -225,7 +235,8 @@ export default function Game() {
               win: won, ms: view, u: birdU, t0: tNow,
             });
             if (status !== "Refunded") fx.current = { t0: tNow, hit: lost };
-            if (lost) navigator.vibrate?.(60);
+            if (lost) navigator.vibrate?.(60), play("hit"), setTimeout(() => play("die"), 220);
+            else play(won ? "point" : "swoosh");
             rerender(); // balance shows the payout now
           }
           if (xOf(g, p.window_end_ms) < -colW) continue;
@@ -235,7 +246,8 @@ export default function Game() {
           gaps.push({
             ...gapOf(p.band_lo, p.band_hi), state: st,
             label: st === "won" ? fmtRef.current(pay - p.stake, true) : st === "lost" ? fmtRef.current(-p.stake, true) : mult(p.quote_bps),
-            sub: st === "open" ? `win ${fmtRef.current(pay)}` : null,
+            // open bets count down to the moment the bird reaches the pipe
+            sub: st === "open" ? `win ${fmtRef.current(pay)} · ${Math.max(0, Math.ceil((p.window_end_ms - view) / 1000))}s` : null,
           });
           mine.set(p.window_idx, gaps);
         }
@@ -371,6 +383,7 @@ export default function Game() {
       placed_at_ms: nowMs, quote_bps: q, stake: amount, session_id: tid ?? 1, status: "Open", market: mkt,
     };
     pending.current.push(opt);
+    play("wing");
     e.win += 1;
     rerender();
     try {
@@ -417,6 +430,7 @@ export default function Game() {
 
   const size = Number.isNaN(e.lo) ? 2 : e.hi - e.lo + 1;
   const win = liveQ ? Math.floor((stake * liveQ) / 1e4) : 0;
+  const closesIn = Math.max(0, Math.ceil((e.win * WINDOW_MS - (chainNow + (FIXTURE ? 0 : TX_MS))) / 1000));
   // Why Drop is off, in words.
   const lobby = tour && chainNow < tour.start_ms - 12_000; // first pipe still off screen
   const why = !b?.spot ? "Waiting for price" : lobby ? `Starts in ${Math.ceil((tour.start_ms - chainNow) / 1000)} s — watch the bird` : !pipesLeft ? "Bell rang" : tid != null && !myRow ? "Join to play" : !liveQ ? "Too safe — narrow it or move it off the bird" : (shownBal ?? 0) < stake ? (tid != null ? "Out of points" : "Balance too low") : "";
@@ -432,9 +446,10 @@ export default function Game() {
             </button>
           ))}
         </div>
+        <button className="snd" aria-label={sound ? "Mute" : "Sound on"} onClick={() => (setSound(!sound), setSoundState(!sound))}>{sound ? "🔊" : "🔇"}</button>
         {session && tid == null && (
           <button className="cash" onClick={() => setCashout(true)} disabled={!balance.data}>
-            Cash out <b>{shownBal == null ? "—" : usd(shownBal)}</b>
+            <span className="lbl">Cash out </span><b>{shownBal == null ? "—" : usd(shownBal)}</b>
           </button>
         )}
       </header>
@@ -491,7 +506,7 @@ export default function Game() {
         ) : why ? (
           <><b>Drop</b><span>{why}</span></>
         ) : (
-          <><b>▼ Drop {mult(liveQ!)}</b><span>{fmt(stake)} → win {fmt(win)}</span></>
+          <><b>▼ Drop {mult(liveQ!)}</b><span>{fmt(stake)} → win {fmt(win)} · closes {closesIn}s</span></>
         )}
       </button>
 

@@ -231,3 +231,15 @@ a.play { color: var(--on-accent); }
 .gdrop.off, .gdrop:disabled { background: rgba(20, 16, 10, 0.78); color: #f6f1e3; border-color: rgba(255, 255, 255, 0.25); box-shadow: none; opacity: 1; }
 .gdrop.off span { color: #ffd9a8; opacity: 1; }
 @media (prefers-reduced-motion: reduce) { .gdrop { animation: none !important; transition: none; } }
+.snd { flex: none; width: 40px; height: 40px; border-radius: 12px; background: rgba(20, 16, 10, 0.7); backdrop-filter: blur(6px); font-size: 17px; }
+.cash { margin-left: 0; }
+.mkts { margin-right: auto; }
+@media (max-width: 520px) {
+  .topbar { gap: 6px; right: 8px; }
+  .mkts button { padding: 8px 9px; font-size: 12px; }
+  .snd { width: 36px; height: 36px; font-size: 15px; }
+  .cash { padding: 0 10px; height: 36px; }
+  .cash .lbl { display: none; }
+  .cash b { margin-left: 0; }
+  .cash::before { content: "⇥ "; color: #fff; }
+}
