@@ -157,6 +157,14 @@ set_config(pool_contract: Option<AccountId>, pool_id: Option<u64>,
 migrate()                               // private, one-shot upgrade v2 -> v3 (run 2026-11-14, tx 7ooWKBU5…)
 // set_config is #[payable] + assert_one_yocto; yocto_per_unit locked after the first deposit
 
+// markets (v4, tx CD9y3jUM…): every pool has its own tick, ring and gates; balance, vault, caps shared
+// poke(market?), board(market?), quote(..., session_id?, market?), place(..., market?), place_chips(..., market?)
+// all default to market 0, so v3 callers keep working. positions() rows carry `market`.
+#[payable] add_market(label: String, pool_contract, pool_id: u64, tick: U128) -> u32   // owner, 1 yocto
+markets(): { id, label, pool_contract, pool_id, tick, spot, last_sample_ms }[]
+// live: 0 wNEAR/RFT (pool 0), 1 wNEAR/ELIXIR (pool 275), 2 wNEAR/GOLD (pool 274); a pool must
+// have wNEAR as amounts[0] so price = amounts[1]*1e36/amounts[0] fits u128
+
 // tournaments (sessions >= 2)
 create_tourney(entry: u64, start_ms: u64, length_ms: u64) -> u64  // entry mUSD <= $10; start within 1 h (rounded up to a window); 1-30 min; host auto-joins
 join_tourney(id: u64)                   // before start; pays entry from balance; stack = 10_000 points

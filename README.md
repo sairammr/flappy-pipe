@@ -3,9 +3,10 @@
 Flappy Bird where the bird is a live on-chain price. You bet real (testnet) dollars on where
 it will be when it reaches the next pipe.
 
-- The bird's height is the wNEAR/RFT price of **Rhea (Ref) testnet pool 0**
-  (`ref-finance-101.testnet`). The contract reads it itself with a cross-contract `get_pool`
-  call. No off-chain price signer is involved.
+- The bird's height is a live **Rhea (Ref) testnet pool** price. Three markets:
+  wNEAR/RFT (pool 0), wNEAR/ELIXIR (pool 275), wNEAR/GOLD (pool 274), one shared balance.
+  The contract reads each pool itself with a cross-contract `get_pool` call. No off-chain
+  price signer is involved.
 - A pipe stands every 5 s. Drag the gap of the next pipe up or down, or stretch its lips, then
   tap **Drop**. If the bird is inside the gap when it reaches the pipe, you win
   stake × multiplier. If it hits the pipe, you lose the stake.
@@ -23,12 +24,13 @@ it will be when it reaches the next pipe.
 |---|---|
 | Open the app and pick **Demo** | Local simulator with a pretend $10. No chain, no wallet. |
 | Pick **Live** and tap **Play as guest** | About 10 s later you have a fresh testnet account holding $10 in the game, with zero wallet prompts |
-| Drag the dashed gap and tap **Drop 2.4x** | Your balance drops by the stake right away. The pipe turns solid with "2.4x / win $0.24" |
+| Pick **RFT / ELIXIR / GOLD** at the top | The board switches to that pool's live price |
+| Tap where you think the bird will be (or drag the gap; − / + change its size), then **Drop $0.10 · 2.4x** | Your balance drops by the stake right away. The pipe turns solid with "2.4x / win $0.24" |
 | Watch the bird reach that pipe | Inside the gap: green flash and "+$0.14 Through!", and the balance goes up at once. On the pipe: red pipe, shake and "−$0.10 Hit the pipe". The chain's `settle` confirms it a few seconds later |
-| 🏆 (top right) | Global leaderboard: on-chain cash P&L, wins/trades, best multiplier |
-| ⚔ → $1 · 3 min → **Create** | A tournament starting in 60 s, with the link `/?t=<id>`. Friends open it and tap **Join $1** |
+| **Leaderboard** (sidebar; ☰ on phones) | Global on-chain cash P&L, win rate, best multiplier, your rank |
+| **Multiplayer** → $1 · 3 min · GOLD → **Create** | A tournament with a link `/?t=<id>&m=<market>` to copy. Friends open it and tap **Join $1** |
 | Play while it runs | Everyone starts with 10,000 points on the same pipes, with a live rank in the banner. At the bell the pot pays 50/30/20 into balances |
-| Drawer (pull up) → **Withdraw** | Your balance goes back to the account as testnet NEAR |
+| **Cash out** (top right) or **Wallet** | Balance back out as testnet NEAR; guests can forward it to any `*.testnet` account. Wallet also deposits $1–$25 and lists your trades |
 
 ## Prove it from the command line
 

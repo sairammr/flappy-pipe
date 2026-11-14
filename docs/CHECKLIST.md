@@ -43,6 +43,16 @@ Deadline 2026-11-14 23:59 UTC. Testnet only (user decision). `[x]` only when ver
 - [x] Demo vs Live pill; tournaments + leaderboard explain they're Live-only in Demo
 - [x] Offline / broke / watching / out-of-points / bell states
 
+## 6b. Product pass (user request 18:00 UTC)
+- [x] Multiple markets on-chain (RFT, ELIXIR, GOLD), switcher on top, one shared balance
+- [x] Cash out on top (confirm sheet) + Wallet page: deposit $1–$25, cash out, forward to any account, history, how money works
+- [x] Sidebar (desktop) / ☰ drawer (phone): Play, Multiplayer, Leaderboard, Wallet, How to play, Demo/Live, account
+- [x] Leaderboard page (rank, P&L, win rate, best), Multiplayer page (create with market + start time → copyable link → lobby; open list with Join/Link/Watch)
+- [x] Drop button: "Drop $0.10 · 2.4x / win $0.24", or why it's off
+- [x] Gap: tap to place, drag to move, −/+ size buttons
+- [x] Engine under public RPC limits (bot balance cache, NPCs off)
+- [x] Verified: ELIXIR drops placed + won, tournament created from page → lobby on GOLD, demo deposit/cash out, 0 page errors
+
 ## 7. Ship
 - [x] Git repo with history, pushed to private `sairammr/riptide`
 - [x] README (do X → see Y, accounts, tx links, third-party + AI disclosure, risks)
