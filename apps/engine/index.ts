@@ -2,7 +2,7 @@
 // Every job is a permissionless call over on-chain state, so restarting loses nothing.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { Account, FailoverRpcProvider, JsonRpcProvider, type KeyPairString } from "near-api-js";
+import { Account, FailoverRpcProvider, JsonRpcProvider, type KeyPairString, actions } from "near-api-js";
 
 import type { Board } from "./quote";
 
@@ -11,9 +11,13 @@ const RPC = env.RPC_URL ?? "https://rpc.testnet.fastnear.com";
 const CONTRACT = env.CONTRACT_ID ?? "riptide-6024.testnet";
 const PREFIX = env.ACCOUNT_PREFIX ?? "riptide-6024";
 const REF = "ref-finance-101.testnet";
-const POOL_ID = 0;
-const TOKEN_A = "wrap.testnet"; // amounts[0], 24 decimals
-const TOKEN_B = "rft.tokenfactory.testnet"; // amounts[1], 8 decimals
+// Contract markets (see `markets()`): each is a Rhea pool with wNEAR as amounts[0].
+// `size` scales the bot's swaps to the pool's depth so every market moves a few bps a swap.
+const MARKETS = [
+  { id: 0, pool: 0, a: "wrap.testnet", b: "rft.tokenfactory.testnet", size: 1 }, // ~1500 wNEAR deep
+  { id: 1, pool: 275, a: "wrap.testnet", b: "elixir.thegame.testnet", size: 0.12 }, // ~177 wNEAR
+  { id: 2, pool: 274, a: "wrap.testnet", b: "gold.thegame.testnet", size: 0.05 }, // ~70 wNEAR
+];
 const PORT = Number(env.PORT ?? 8787);
 const ALWAYS_ON = env.ALWAYS_ON === "1";
 const IDLE_AFTER_MS = 10 * 60_000;
@@ -49,8 +53,9 @@ const active = () => ALWAYS_ON || Date.now() - lastPing < IDLE_AFTER_MS;
 // every bet "price stale". near-api-js hands concurrent calls increasing nonces.
 async function pokeLoop() {
   for (;;) {
+    // one tx, one poke action per market
     engine
-      .callFunction({ contractId: CONTRACT, methodName: "poke", args: {}, gas: 30n * TGAS, waitUntil: "INCLUDED" })
+      .signAndSendTransaction({ receiverId: CONTRACT, actions: MARKETS.map((m) => actions.functionCall("poke", { market: m.id }, 30n * TGAS, 0n)), waitUntil: "INCLUDED" })
       .catch((e) => console.log("poke:", short(e)));
     await sleep(active() ? 1000 : 10_000);
   }
@@ -85,10 +90,11 @@ type Pool = { amounts: [string, string] };
 // raw B per raw A is ~1e-11 on pool 0 (8 vs 24 decimals), so scale well past it before dividing
 const poolPrice = (p: Pool) => Number((BigInt(p.amounts[1]) * 10n ** 30n) / BigInt(p.amounts[0])) / 1e30;
 
-async function swap(tokenIn: string, tokenOut: string, amountIn: bigint) {
+type Market = (typeof MARKETS)[number];
+async function swap(m: Market, tokenIn: string, tokenOut: string, amountIn: bigint) {
   const msg = JSON.stringify({
     force: 0,
-    actions: [{ pool_id: POOL_ID, token_in: tokenIn, token_out: tokenOut, amount_in: amountIn.toString(), min_amount_out: "0" }],
+    actions: [{ pool_id: m.pool, token_in: tokenIn, token_out: tokenOut, amount_in: amountIn.toString(), min_amount_out: "0" }],
   });
   await bot.callFunction({
     contractId: tokenIn,
@@ -100,38 +106,44 @@ async function swap(tokenIn: string, tokenOut: string, amountIn: bigint) {
   });
 }
 
+// One swap per tick, markets in turn: a mean-reverting random walk around each pool's start.
 async function botLoop() {
-  const anchor = poolPrice(await view<Pool>(REF, "get_pool", { pool_id: POOL_ID }));
-  console.log(`bot: anchor ${anchor} raw RFT per raw wNEAR`);
-  for (;;) {
+  let anchors: number[] = [];
+  while (!anchors.length) {
+    anchors = await Promise.all(MARKETS.map(async (m) => poolPrice(await view<Pool>(REF, "get_pool", { pool_id: m.pool })))).catch((e) => (console.log("bot: anchors:", short(e)), []));
+    if (!anchors.length) await sleep(3000);
+  }
+  console.log(`bot: anchors ${anchors.join(", ")}`);
+  for (let k = 0; ; k++) {
     if (!active()) {
       await sleep(5000);
       continue;
     }
+    const m = MARKETS[k % MARKETS.length]!;
     try {
       const [pool, balA, balB] = await Promise.all([
-        view<Pool>(REF, "get_pool", { pool_id: POOL_ID }),
-        view<string>(TOKEN_A, "ft_balance_of", { account_id: bot.accountId }),
-        view<string>(TOKEN_B, "ft_balance_of", { account_id: bot.accountId }),
+        view<Pool>(REF, "get_pool", { pool_id: m.pool }),
+        view<string>(m.a, "ft_balance_of", { account_id: bot.accountId }),
+        view<string>(m.b, "ft_balance_of", { account_id: bot.accountId }),
       ]);
       const price = poolPrice(pool);
-      // Selling wNEAR pushes price (RFT per wNEAR) down. Lean that way when above the anchor.
-      const dev = Math.log(price / anchor);
+      // Selling wNEAR pushes price (B per wNEAR) down. Lean that way when above the anchor.
+      const dev = Math.log(price / anchors[m.id]!);
       const pSellA = Math.min(0.9, Math.max(0.1, 0.5 + dev * 30));
       // ponytail: fixed size band + 5% jumps; tune if the board reads too calm or too wild
-      const sizeNear = (0.1 + Math.random() * 0.3) * (Math.random() < 0.05 ? 4 : 1);
+      const sizeNear = m.size * (0.1 + Math.random() * 0.3) * (Math.random() < 0.05 ? 4 : 1);
       const inA = BigInt(Math.floor(sizeNear * 1e6)) * 10n ** 18n; // yocto wNEAR
-      const inB = (inA * BigInt(pool.amounts[1])) / BigInt(pool.amounts[0]); // same value in raw RFT
+      const inB = (inA * BigInt(pool.amounts[1])) / BigInt(pool.amounts[0]); // same value in raw B
       const sellA = Math.random() < pSellA;
-      if (sellA && BigInt(balA) >= inA) await swap(TOKEN_A, TOKEN_B, inA);
-      else if (!sellA && BigInt(balB) >= inB) await swap(TOKEN_B, TOKEN_A, inB);
-      else if (BigInt(balA) >= inA) await swap(TOKEN_A, TOKEN_B, inA);
-      else if (BigInt(balB) >= inB) await swap(TOKEN_B, TOKEN_A, inB);
-      else console.log("bot: out of both tokens");
+      if (sellA && BigInt(balA) >= inA) await swap(m, m.a, m.b, inA);
+      else if (!sellA && BigInt(balB) >= inB) await swap(m, m.b, m.a, inB);
+      else if (BigInt(balA) >= inA) await swap(m, m.a, m.b, inA);
+      else if (BigInt(balB) >= inB) await swap(m, m.b, m.a, inB);
+      else console.log(`bot: market ${m.id} out of both tokens`);
     } catch (e) {
       console.log("bot:", short(e));
     }
-    await sleep(1500 + Math.random() * 1000);
+    await sleep((1500 + Math.random() * 1000) / MARKETS.length);
   }
 }
 
@@ -228,6 +240,9 @@ Bun.serve({
     return new Response("not found", { status: 404, headers });
   },
 });
+
+// A public RPC hiccup must never take the engine down: every loop retries on its own.
+process.on("unhandledRejection", (e) => console.log("unhandled:", short(e)));
 
 console.log(`engine: contract ${CONTRACT}, rpc ${RPC}, http :${PORT}, always_on=${ALWAYS_ON}`);
 pokeLoop();
