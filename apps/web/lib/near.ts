@@ -5,6 +5,11 @@ import * as fx from "./fixture";
 import type { Board, Position } from "./board";
 
 export type Vault = { cash_edge_bps: number; cash_max_quote_bps: number; max_cash_stake: number };
+export type Leader = { account_id: string; pnl: number; trades: number; wins: number; best_bps: number };
+export type Tourney = {
+  id: number; host: string; entry: number; start_ms: number; end_ms: number; pot: number; open: number; settled: boolean;
+  players: { account_id: string; chips: number; prize: number }[]; // best first
+};
 
 export const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ID || "riptide-6024.testnet";
 export const RPC = process.env.NEXT_PUBLIC_RPC_URL || "https://rpc.testnet.fastnear.com";
@@ -25,7 +30,7 @@ export function setMode(m: Mode) {
   localStorage.setItem(MKEY, m);
   location.reload();
 }
-export const GAME_METHODS = ["place", "poke", "settle"];
+export const GAME_METHODS = ["place", "poke", "settle", "place_chips", "create_tourney", "join_tourney", "settle_tourney"];
 // Money is mUSD on-chain (1 unit = $0.001). Demo rate on testnet: $10 = 1 NEAR.
 export const YOCTO_PER_MUSD = 10n ** 20n;
 export const DEPOSIT_MUSD = 10_000; // $10
@@ -62,6 +67,10 @@ export const api = {
     const list = b.height === p.height ? p.v : (await viewAt<Position[]>("positions", { account_id }, b.height)).v;
     return { list, bal: b.v, height: b.height };
   },
+  // Leaderboard and tournaments are on-chain only; demo has none.
+  leaders: () => (FIXTURE ? Promise.resolve([] as Leader[]) : view<Leader[]>("leaders")),
+  tourney: (id: number) => view<Tourney | null>("tourney", { id }),
+  tourneysLive: () => (FIXTURE ? Promise.resolve([] as number[]) : view<number[]>("tourneys_live")),
   vault: () => (FIXTURE ? Promise.resolve(fx.VAULT) : view<Vault>("vault")),
 };
 

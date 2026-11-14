@@ -29,8 +29,9 @@ function erfc(x: number): number {
 }
 const phi = (z: number) => 0.5 * erfc(-z / Math.SQRT2);
 export type Pricing = { cash_edge_bps: number; cash_max_quote_bps: number };
-export function quoteGap(spotU: number, sigmaPpm: number, lo: number, hi: number, win: number, nowMs: number, p?: Pricing): number | null {
-  const t = (win + 1) * WINDOW_MS - nowMs;
+/** `fromMs` = time of the last known price (the contract prices from the last sample). */
+export function quoteGap(spotU: number, sigmaPpm: number, lo: number, hi: number, win: number, fromMs: number, p?: Pricing): number | null {
+  const t = (win + 1) * WINDOW_MS - fromMs;
   if (t <= 0 || !spotU) return null;
   const sig = (sigmaPpm / 1e6) * Math.sqrt(t / WINDOW_MS);
   const P = Math.max(1, Math.floor((phi((hi + 1 - spotU) / spotU / sig) - phi((lo - spotU) / spotU / sig)) * 1e4));
@@ -100,7 +101,7 @@ export type Rect = { x: number; y: number; w: number; h: number };
 
 // The bird is drawn this far behind chain time, so it only ever moves between real on-chain
 // samples (one lands every ~2 s and takes ~1 s more to reach the browser). It never guesses.
-export const LAG_MS = 3000;
+export const LAG_MS = 4000;
 
 export type Pt2 = { t: number; u: number }; // sample time (ms), price in band units
 
@@ -115,27 +116,17 @@ export function uAtTime(ss: Pt2[], t: number): number {
   return ss.at(-1)!.u;
 }
 
-/** Client mirror of the contract's `outcome` (pass-through: every sample in
- *  [window_start, window_end] inside [band_lo, band_hi + 1)), plus `at`: the moment the bird
- *  visibly decides it — where its line crosses the lip on the way to the first bad sample, or
- *  the window end for a pass. null = not decided yet (or samples no longer cover the window). */
-export function resolve(ss: Pt2[], p: Pick<Position, "band_lo" | "band_hi" | "window_start_ms" | "window_end_ms">): { status: Exclude<Status, "Open">; at: number } | null {
-  const start = p.window_start_ms, end = p.window_end_ms, lo = p.band_lo, hi = p.band_hi + 1;
-  if (!ss.length || ss[0]!.t > start) return null;
-  const out = (u: number) => u < lo || u >= hi;
-  let prev: Pt2 | null = null, seen = false;
-  for (const s of ss) {
-    if (s.t > end) break;
-    if (s.t >= start) {
-      if (out(s.u)) {
-        let at = s.t;
-        if (prev) at = out(prev.u) ? prev.t : prev.t + (((s.u < lo ? lo : hi) - prev.u) / (s.u - prev.u)) * (s.t - prev.t);
-        return { status: "Lost", at: Math.max(start, at) };
-      }
-      seen = true;
-    }
-    prev = s;
-  }
-  if (ss.at(-1)!.t < end) return null;
-  return { status: seen ? "Won" : "Refunded", at: end };
+/** Client mirror of the contract's gate rule: the price where the bird meets the pipe (window
+ *  end, on the straight line between the samples either side of it) must be in
+ *  [band_lo, band_hi + 1). Samples more than MAX_GATE_GAP_MS apart => refund. `at` = the gate.
+ *  null = not decided yet (no sample past the gate) or history doesn't reach back. */
+export const MAX_GATE_GAP_MS = 10_000;
+export function resolve(ss: Pt2[], p: Pick<Position, "band_lo" | "band_hi" | "window_end_ms">): { status: Exclude<Status, "Open">; at: number } | null {
+  const end = p.window_end_ms;
+  const k = ss.findIndex((s) => s.t >= end);
+  if (k < 1) return null;
+  const a = ss[k - 1]!, b = ss[k]!;
+  if (b.t - a.t > MAX_GATE_GAP_MS) return { status: "Refunded", at: end };
+  const u = a.u + ((b.u - a.u) * (end - a.t)) / (b.t - a.t);
+  return { status: u >= p.band_lo && u < p.band_hi + 1 ? "Won" : "Lost", at: end };
 }

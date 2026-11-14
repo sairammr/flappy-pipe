@@ -2,7 +2,7 @@
 // returns the exact frozen view shapes. Seeded from fixtures/board.json, then a
 // random walk + the spec's pricer keep it alive so the board can be played.
 import seed from "../fixtures/board.json";
-import { MAX_GAP, WINDOW_MS, quoteGap, type Board, type Position, type Sample } from "./board";
+import { MAX_GAP, WINDOW_MS, quoteGap, resolve, type Board, type Position, type Sample } from "./board";
 
 const tick = Number(seed.tick);
 let spot = Number(seed.spot);
@@ -31,10 +31,10 @@ function walk(ts: number) {
 function settle(now: number) {
   for (const p of positions) {
     if (p.status !== "Open" || now < p.window_end_ms + 1000) continue;
-    // pass-through: every sample inside the window must be inside the gap
-    const lo = Number(p.price_lo), hi = Number(p.price_hi);
-    const path = samples.filter((s) => s.ts_ms >= p.window_start_ms && s.ts_ms <= p.window_end_ms);
-    p.status = !path.length ? "Refunded" : path.every((s) => s.price >= lo && s.price < hi) ? "Won" : "Lost";
+    // same gate rule as the contract
+    const r = resolve(samples.map((s) => ({ t: s.ts_ms, u: s.price / tick })), p);
+    if (!r) continue;
+    p.status = r.status;
     balance += p.status === "Won" ? Math.floor((p.stake * p.quote_bps) / 1e4) : p.status === "Refunded" ? p.stake : 0;
   }
 }
@@ -63,7 +63,7 @@ export function call(method: string, args: Record<string, unknown>): unknown {
   const now = Date.now();
   if (band_lo > band_hi || band_hi - band_lo >= MAX_GAP * 2) throw new Error("bad gap");
   if (window_idx < Math.floor(now / WINDOW_MS) + 1) throw new Error("window closed");
-  const q = quoteGap(spot / tick, SIGMA_PPM, band_lo, band_hi, window_idx, now, VAULT);
+  const q = quoteGap(spot / tick, SIGMA_PPM, band_lo, band_hi, window_idx, last, VAULT);
   if (q == null || q < min_quote_bps) throw new Error("quote moved");
   if (stake > balance) throw new Error("insufficient balance");
   balance -= stake;

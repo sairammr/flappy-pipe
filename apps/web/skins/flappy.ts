@@ -86,9 +86,9 @@ export const flappy: Skin = {
   },
 
   column(ctx, r, gaps, ghost, t) {
-    // The pipe spans its whole 5 s window: any sample under it counts, so the bird is in the
-    // pipe exactly while it's drawn inside it. A thin seam keeps neighbours apart.
-    const w = r.w - 10, x = r.x + 5, cx = r.x + r.w / 2;
+    // The pipe stands on the window's end, the gate: the bet is decided exactly where the
+    // bird's centre meets the pipe's centre line.
+    const w = Math.min(56, r.w * 0.5), cx = r.x + r.w, x = cx - w / 2;
     const red = gaps.length > 0 && gaps.every((g) => g.state === "lost");
     const sorted = [...gaps].sort((a, b) => a.y - b.y);
     ctx.globalAlpha = ghost ? 0.3 : 1;
