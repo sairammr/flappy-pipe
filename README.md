@@ -22,7 +22,7 @@ it will be when it reaches the next pipe.
 **Play it:** https://riptide-navy.vercel.app (web on Vercel; the engine that pokes prices, settles
 and creates guest accounts runs on the team's machine behind a tunnel during judging). If the
 board ever says "offline", run it locally (below) — everything it needs is on-chain.
-**Video:** `video/out/riptide-pitch.mp4` (2 min, voiced) — also attached to the X post.
+**Video:** [`docs/riptide-pitch.mp4`](docs/riptide-pitch.mp4) (2 min, voiced) — also attached to the X post.
 
 ## Try it: do X, see Y
 
