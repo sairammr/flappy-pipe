@@ -121,6 +121,9 @@ async function botLoop() {
   const refresh = async () => {
     for (const t of new Set(MARKETS.flatMap((m) => [m.a, m.b]))) bals.set(t, await view<string>(t, "ft_balance_of", { account_id: bot.accountId }));
   };
+  // Pools are re-read every few swaps; between reads the cached amounts are close enough to size
+  // a swap and lean it back toward the anchor.
+  const pools = new Map<number, Pool>();
   for (let k = 0; ; k++) {
     if (!active()) {
       await sleep(5000);
@@ -129,7 +132,8 @@ async function botLoop() {
     const m = MARKETS[k % MARKETS.length]!;
     try {
       if (k % 30 === 0 || !bals.size) await refresh();
-      const pool = await view<Pool>(REF, "get_pool", { pool_id: m.pool });
+      if (k % (MARKETS.length * 4) < MARKETS.length || !pools.has(m.pool)) pools.set(m.pool, await view<Pool>(REF, "get_pool", { pool_id: m.pool }));
+      const pool = pools.get(m.pool)!;
       const balA = bals.get(m.a) ?? "0", balB = bals.get(m.b) ?? "0";
       const price = poolPrice(pool);
       // Selling wNEAR pushes price (B per wNEAR) down. Lean that way when above the anchor.
@@ -140,16 +144,19 @@ async function botLoop() {
       const inA = BigInt(Math.floor(sizeNear * 1e6)) * 10n ** 18n; // yocto wNEAR
       const inB = (inA * BigInt(pool.amounts[1])) / BigInt(pool.amounts[0]); // same value in raw B
       const sellA = Math.random() < pSellA;
-      if (sellA && BigInt(balA) >= inA) await swap(m, m.a, m.b, inA);
-      else if (!sellA && BigInt(balB) >= inB) await swap(m, m.b, m.a, inB);
-      else if (BigInt(balA) >= inA) await swap(m, m.a, m.b, inA);
-      else if (BigInt(balB) >= inB) await swap(m, m.b, m.a, inB);
-      else console.log(`bot: market ${m.id} out of both tokens`);
+      const [tin, tout, amt] =
+        sellA && BigInt(balA) >= inA ? [m.a, m.b, inA] : !sellA && BigInt(balB) >= inB ? [m.b, m.a, inB] : BigInt(balA) >= inA ? [m.a, m.b, inA] : BigInt(balB) >= inB ? [m.b, m.a, inB] : [];
+      if (!tin) bals.clear(); // cached balances ran dry: re-read next tick
+      else {
+        // Fire and forget, like pokes: waiting ~2 s per swap left each pool still for ~20 s.
+        bals.set(tin, (BigInt(bals.get(tin) ?? "0") - (amt as bigint)).toString());
+        swap(m, tin as string, tout as string, amt as bigint).catch((e) => (console.log("bot swap:", short(e)), bals.clear()));
+      }
     } catch (e) {
       console.log("bot:", short(e));
       bals.clear();
     }
-    await sleep(1200 + Math.random() * 800); // ~1 swap per 1.6 s across all markets: stays under public RPC limits
+    await sleep(700 + Math.random() * 500);
   }
 }
 
