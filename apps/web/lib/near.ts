@@ -5,6 +5,7 @@ import * as fx from "./fixture";
 import type { Board, Position } from "./board";
 
 export type Vault = { cash_edge_bps: number; cash_max_quote_bps: number; max_cash_stake: number };
+export type Market = { id: number; label: string; pool_id: number; spot: string | null; last_sample_ms: number | null };
 export type Leader = { account_id: string; pnl: number; trades: number; wins: number; best_bps: number };
 export type Tourney = {
   id: number; host: string; entry: number; start_ms: number; end_ms: number; pot: number; open: number; settled: boolean;
@@ -67,9 +68,8 @@ async function viewAt<T>(method: string, args: object = {}, block?: number): Pro
 const view = async <T>(method: string, args: object = {}) => (await viewAt<T>(method, args)).v;
 
 export const api = {
-  board: () => (FIXTURE ? Promise.resolve(fx.board()) : view<Board>("board")),
-  positions: (account_id: string) => (FIXTURE ? Promise.resolve(fx.getPositions()) : view<Position[]>("positions", { account_id })),
-  balance: (account_id: string) => (FIXTURE ? Promise.resolve(fx.getBalance()) : view<number>("balance", { account_id })),
+  board: (market = 0) => (FIXTURE ? Promise.resolve(fx.board()) : view<Board>("board", { market })),
+  markets: () => (FIXTURE ? Promise.resolve([{ id: 0, label: "Demo", pool_id: 0, spot: null, last_sample_ms: null }] as Market[]) : view<Market[]>("markets")),
   /** Positions and balance from the same block: a settle changes both at once, so mixing
    *  heights would count a payout twice or not at all. */
   account: async (account_id: string) => {
@@ -98,13 +98,17 @@ export function loadSession(): Session | null {
     return null;
   }
 }
+// Pages and the sidebar listen for this to pick up sign-in / sign-out.
+const changed = () => dispatchEvent(new Event("riptide:session"));
 function saveSession(s: Session) {
   localStorage.setItem(SKEY, JSON.stringify(s));
   localStorage.setItem(`riptide:key:${s.accountId}`, s.key);
+  changed();
 }
 export function signOut() {
   localStorage.removeItem(SKEY);
   account = null;
+  changed();
 }
 
 /** ONE wallet approval: sign-in that adds our app-generated key as a
@@ -177,13 +181,18 @@ export async function playAsGuest(): Promise<Session> {
 // rapid taps don't collide) and retries on InvalidNonce after re-fetching.
 let account: import("near-api-js").Account | null = null;
 
-export async function call<T = unknown>(s: Session, method: string, args: object, deposit = 0n): Promise<T> {
-  if (FIXTURE) return fx.call(method, args as Record<string, unknown>) as T;
+async function acct(s: Session) {
   if (!account || account.accountId !== s.accountId) {
     const { Account, FailoverRpcProvider, JsonRpcProvider } = await import("near-api-js");
     const provider = new FailoverRpcProvider(RPCS.map((url) => new JsonRpcProvider({ url })));
     account = new Account(s.accountId, provider, s.key as `ed25519:${string}`);
   }
+  return account;
+}
+
+export async function call<T = unknown>(s: Session, method: string, args: object, deposit = 0n): Promise<T> {
+  if (FIXTURE) return fx.call(method, args as Record<string, unknown>) as T;
+  const account = await acct(s);
   return account.callFunction<T & {}>({ contractId: CONTRACT, methodName: method, args, gas: GAS, deposit }) as Promise<T>;
 }
 
@@ -208,6 +217,21 @@ export async function withdraw(s: Session, musd: number) {
   if (FIXTURE) return void fx.call("withdraw", { musd });
   if (s.kind === "guest") await call(s, "withdraw", { units: musd }, 1n);
   else await viaWallet("withdraw", { units: musd }, "1");
+}
+
+/** NEAR held by the account itself (outside the game), in yocto. */
+export async function nearBalance(accountId: string): Promise<bigint> {
+  if (FIXTURE) return 0n;
+  const j = await rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: { request_type: "view_account", finality: "optimistic", account_id: accountId } }));
+  return BigInt(j.result?.amount ?? 0);
+}
+
+/** Guests only (their key is full-access): send NEAR from the guest account to any account,
+ *  e.g. the player's own wallet after cashing out. Keeps 0.05 NEAR for storage + gas. */
+export async function sendNear(s: Session, to: string, yocto: bigint) {
+  if (s.kind !== "guest" || FIXTURE) throw new Error("wallet accounts send from the wallet");
+  const a = await acct(s);
+  await a.transfer({ receiverId: to, amount: yocto });
 }
 
 /** One line for the inline status, from whatever near-api-js threw. */

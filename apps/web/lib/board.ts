@@ -53,6 +53,7 @@ export type Position = {
   stake: number;
   session_id: number;
   status: Status;
+  market?: number; // absent on demo / pre-markets positions = 0
 };
 
 // Money is mUSD everywhere: 1 unit = $0.001, so the default $0.10 trade is 100.
