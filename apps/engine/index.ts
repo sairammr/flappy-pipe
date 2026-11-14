@@ -60,7 +60,7 @@ async function pokeLoop() {
       .signAndSendTransaction({ receiverId: CONTRACT, actions: MARKETS.map((m) => actions.functionCall("poke", { market: m.id }, 30n * TGAS, 0n)), waitUntil: "INCLUDED" })
       .catch((e) => console.log("poke:", short(e)));
     // 2 s: samples still land every ~2-3 s (gates need one within 10 s) at half the gas of 1 Hz
-    await sleep(active() ? 2000 : 10_000);
+    await sleep(active() ? 2000 : 60_000); // idle: one sample a minute keeps the board warm for little gas
   }
 }
 
@@ -122,6 +122,11 @@ async function botLoop() {
   const bals = new Map<string, string>();
   const refresh = async () => {
     for (const t of new Set(MARKETS.flatMap((m) => [m.a, m.b]))) bals.set(t, await view<string>(t, "ft_balance_of", { account_id: bot.accountId }));
+    // Low on wNEAR: wrap 2 NEAR so every market can keep swapping.
+    if (BigInt(bals.get("wrap.testnet") ?? "0") < 10n ** 24n) {
+      await bot.callFunction({ contractId: "wrap.testnet", methodName: "near_deposit", args: {}, deposit: 2n * 10n ** 24n, gas: 30n * TGAS, waitUntil: "INCLUDED" })
+        .then(() => console.log("bot: wrapped 2 NEAR"), (e) => console.log("bot: wrap:", short(e)));
+    }
   };
   // Pools are re-read every few swaps; between reads the cached amounts are close enough to size
   // a swap and lean it back toward the anchor.

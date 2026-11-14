@@ -137,7 +137,7 @@ cd apps/web && cp .env.example .env.local    # NEXT_PUBLIC_ENGINE_URL=http://loc
 bunx next dev -p 3001                        # open http://localhost:3001
 ```
 
-- Engine flags: `ALWAYS_ON=1` never idles (otherwise it slows to 10 s pokes when no page is
+- Engine flags: `ALWAYS_ON=1` never idles (otherwise it slows to 60 s pokes, bot paused, when no page is
   open); `NPCS=1` adds free-chip NPC traders; `GUEST_COOLDOWN_MS` sets the faucet limit per IP.
 - Contract: `cd contracts/riptide && cargo near build non-reproducible-wasm`. This repo built it in
   a `rust:1-bookworm` Docker container with cargo-near 0.23.
