@@ -1,11 +1,10 @@
 "use client";
-// Everything around the board: onboarding, the global leaderboard, tournaments (create, lobby,
-// live standings, results). The board itself lives in page.tsx.
-import { useQuery } from "@tanstack/react-query";
+// Overlays on the Play page: onboarding and the tournament banner (lobby, live standings,
+// results). Full pages live in app/leaderboard, app/multiplayer, app/wallet.
 import { useEffect, useState } from "react";
 
-import { mult, usd } from "@/lib/board";
-import { FIXTURE, type Session, type Tourney, api, call, reason } from "@/lib/near";
+import { usd } from "@/lib/board";
+import { FIXTURE, type Session, type Tourney, call, reason } from "@/lib/near";
 
 export const short = (id: string) => {
   const s = id.replace(/\.testnet$/, "").replace(/\.riptide-6024-engine$/, "");
@@ -39,8 +38,8 @@ function Sheet({ title, onClose, children }: { title: string; onClose: () => voi
 // ---- onboarding ------------------------------------------------------------
 
 const STEPS = [
-  { h: "The bird is the price", p: "Its height is the live wNEAR/RFT price on a Rhea (Ref) testnet pool, read on-chain every ~2 s." },
-  { h: "Shape the next pipe", p: "Drag the gap up or down, pull its lips to stretch it. Narrow or far from the bird pays more." },
+  { h: "The bird is the price", p: "Its height is a live Rhea (Ref) testnet pool price, read on-chain every 1–3 s. Pick a market at the top." },
+  { h: "Aim the next pipe", p: "Tap where you think the bird will be, or drag the gap. − and + change its size. Narrow or far from the bird pays more." },
   { h: "Drop to bet", p: "If the bird is inside the gap when it reaches the pipe, you win stake × multiplier. If it hits the pipe, you lose the stake." },
 ];
 const OKEY = "riptide:onboarded";
@@ -88,97 +87,7 @@ export function Onboarding({ onGuest, onWallet, onDemo, hasSession }: { onGuest:
   );
 }
 
-// ---- leaderboard -----------------------------------------------------------
-
-export function Leaderboard({ me, onClose }: { me?: string; onClose: () => void }) {
-  const q = useQuery({ queryKey: ["leaders"], queryFn: api.leaders, refetchInterval: 5000 });
-  return (
-    <Sheet title="Leaderboard · all-time P&L" onClose={onClose}>
-      {FIXTURE ? (
-        <p className="body">The leaderboard is on-chain. Switch to Live to climb it.</p>
-      ) : !q.data ? (
-        <p className="body">Loading…</p>
-      ) : !q.data.length ? (
-        <p className="body">No settled trades yet. Be the first.</p>
-      ) : (
-        <ol className="rank">
-          {q.data.map((r, i) => (
-            <li key={r.account_id} className={r.account_id === me ? "me" : ""}>
-              <span className="n">{i + 1}</span>
-              <span className="who">{short(r.account_id)}</span>
-              <span className="meta">{r.wins}/{r.trades} · best {r.best_bps ? mult(r.best_bps) : "—"}</span>
-              <b className={r.pnl >= 0 ? "up" : "down"}>{usd(r.pnl, true)}</b>
-            </li>
-          ))}
-        </ol>
-      )}
-    </Sheet>
-  );
-}
-
 // ---- tournaments -----------------------------------------------------------
-
-const ENTRIES = [0, 1000, 5000, 10000];
-const LENGTHS = [3, 5, 10];
-
-/** Create one, or join an open one. `onOpen(id)` switches the board to that tournament. */
-export function Tournaments({ session, onOpen, onClose, needSession }: { session: Session | null; onOpen: (id: number) => void; onClose: () => void; needSession: () => void }) {
-  const [entry, setEntry] = useState(1000);
-  const [mins, setMins] = useState(3);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const live = useQuery({
-    queryKey: ["tourneys"],
-    queryFn: async () => (await Promise.all((await api.tourneysLive()).map(api.tourney))).filter((t): t is Tourney => !!t),
-    refetchInterval: 4000,
-  });
-  const create = async () => {
-    if (!session) return needSession();
-    setBusy(true);
-    setErr("");
-    try {
-      // starts in 60 s so friends have time to open the link
-      const id = await call<number>(session, "create_tourney", { entry, start_ms: Date.now() + 60_000, length_ms: mins * 60_000 });
-      onOpen(id);
-    } catch (e) {
-      setErr(reason(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Sheet title="Tournaments" onClose={onClose}>
-      {FIXTURE ? (
-        <p className="body">Tournaments run on-chain. Switch to Live to play friends.</p>
-      ) : (
-        <>
-          <p className="body">Everyone pays the entry, gets {pts(10_000)} points and plays the same live pipes. Most points at the bell takes 50% of the pot, 2nd 30%, 3rd 20%.</p>
-          <h3>Entry</h3>
-          <div className="seg">{ENTRIES.map((v) => <button key={v} className={entry === v ? "on" : ""} onClick={() => setEntry(v)}>{v ? usd(v).replace(".00", "") : "Free"}</button>)}</div>
-          <h3>Length</h3>
-          <div className="seg">{LENGTHS.map((v) => <button key={v} className={mins === v ? "on" : ""} onClick={() => setMins(v)}>{v} min</button>)}</div>
-          <button className="play wide" disabled={busy} onClick={create}>{busy ? "Creating…" : `Create · starts in 1 min`}</button>
-          {err && <p className="err">{err}</p>}
-          <h3>Open now</h3>
-          {!live.data?.length ? (
-            <p className="body muted">None open. Create one and share the link.</p>
-          ) : (
-            <ul className="list">
-              {live.data.map((t) => (
-                <li key={t.id}>
-                  <button onClick={() => onOpen(t.id)}>
-                    <span>#{t.id} · {t.entry ? usd(t.entry) : "free"} · {t.players.length} playing</span>
-                    <b>{Date.now() < t.start_ms ? `starts ${clock(t.start_ms - Date.now())}` : Date.now() < t.end_ms ? `${clock(t.end_ms - Date.now())} left` : "finishing"}</b>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-    </Sheet>
-  );
-}
 
 /** Banner over the board while you're in a tournament: lobby -> live -> results. */
 export function TourneyBar({ t, now, me, session, onLeave, onJoined, needSession }: {

@@ -4,8 +4,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { type Board, type Geo, LAG_MS, MAX_GAP, type Position, type Pricing, type Status, WINDOW_MS, makeGeo, msAt, mult, quoteGap, resolve, toU, uAt, uAtTime, usd, xOf, yOf } from "@/lib/board";
-import { DEPOSIT_MUSD, FIXTURE, MODE, type Session, api, call, deposit, loadSession, ping, playAsGuest, playWithWallet, reason, setMode, signOut, withdraw } from "@/lib/near";
-import { Leaderboard, Onboarding, TourneyBar, Tournaments, short } from "./sheets";
+import Link from "next/link";
+
+import { useAccount, useSession } from "@/lib/hooks";
+import { DEPOSIT_MUSD, FIXTURE, api, call, deposit, ping, playAsGuest, playWithWallet, reason, setMode, withdraw } from "@/lib/near";
+import { Onboarding, TourneyBar, short } from "./sheets";
 import { flappy as skin } from "@/skins/flappy";
 import type { Gap } from "@/skins/skin";
 
@@ -21,17 +24,19 @@ const pts = (n: number, sign = false) => `${sign && n > 0 ? "+" : n < 0 ? "−" 
 
 // The pipe you're shaping: absolute bands [lo, hi] (hi inclusive) on window `win`.
 // `drag` says which part the finger holds; du/dlo/dhi are where the drag started.
-type Edit = { touched: boolean; lo: number; hi: number; win: number; drag: null | "move" | "top" | "bottom"; y0: number; lo0: number; hi0: number; shownLo: number; shownHi: number };
+type Edit = { touched: boolean; lo: number; hi: number; win: number; drag: null | "move" | "top" | "bottom"; moved: boolean; y0: number; lo0: number; hi0: number; shownLo: number; shownHi: number };
+const MKEY = "riptide:market";
 
 export default function Game() {
   const qc = useQueryClient();
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession, ready] = useSession();
   const [mounted, setMounted] = useState(false);
+  const [mkt, setMkt] = useState(0); // which market (Rhea pool) the board plays
+  const [cashout, setCashout] = useState(false);
   const [stake, setStake] = useState(100); // $0.10, Euphoria's default trade
   const [line, setLine] = useState("");
   const [drawer, setDrawer] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [sheet, setSheet] = useState<null | "leaders" | "tourneys">(null);
   // ?t=<id>: the board plays that tournament (session id) instead of cash (session 1).
   const [tid, setTid] = useState<number | null>(null);
   const [, setTick] = useState(0); // re-render for the drop button's live quote + optimistic balance
@@ -43,7 +48,8 @@ export default function Game() {
   const offsetRef = useRef<number | null>(null);
   const stakeRef = useRef(stake);
   stakeRef.current = stake;
-  const edit = useRef<Edit>({ touched: false, lo: NaN, hi: NaN, win: 0, drag: null, y0: 0, lo0: 0, hi0: 0, shownLo: NaN, shownHi: NaN });
+  const edit = useRef<Edit>({ touched: false, lo: NaN, hi: NaN, win: 0, drag: null, moved: false, y0: 0, lo0: 0, hi0: 0, shownLo: NaN, shownHi: NaN });
+  const mktRef = useRef(0);
   const pricingRef = useRef<Pricing | undefined>(undefined); // house edge + quote cap, for local quotes
   const sessRef = useRef(1); // the session the board plays: 1 = cash, >= 2 = tournament
   const fmtRef = useRef((n: number, sign?: boolean) => usd(n, sign));
@@ -60,13 +66,18 @@ export default function Game() {
 
   useEffect(() => {
     setMounted(true);
-    const t = Number(new URLSearchParams(location.search).get("t"));
+    const q = new URLSearchParams(location.search), t = Number(q.get("t"));
     if (t >= 2 && !FIXTURE) setTid(t);
-    const s = loadSession();
-    // Demo needs no sign-in: a local player with a pretend $10 exists from the first frame.
-    if (!s && FIXTURE) playAsGuest().then((s) => deposit(s).then(() => setSession(s)));
-    else setSession(s);
+    let m = Number(q.get("m") ?? NaN);
+    try {
+      if (Number.isNaN(m)) m = Number(localStorage.getItem(MKEY) ?? 0);
+    } catch {}
+    if (!FIXTURE && m > 0) setMkt(m);
   }, []);
+  // Demo needs no sign-in: a local player with a pretend $10 exists from the first frame.
+  useEffect(() => {
+    if (ready && !session && FIXTURE) playAsGuest().then((s) => deposit(s).then(() => setSession(s)));
+  }, [ready, session, setSession]);
   useEffect(() => {
     ping();
     const t = setInterval(ping, 30_000);
@@ -78,20 +89,24 @@ export default function Game() {
     return () => clearTimeout(t);
   }, [line]);
 
-  const board = useQuery({ queryKey: ["board"], queryFn: api.board, refetchInterval: 1000 });
+  const board = useQuery({ queryKey: ["board", mkt], queryFn: () => api.board(mkt), refetchInterval: 1000 });
+  const markets = useQuery({ queryKey: ["markets"], queryFn: api.markets, refetchInterval: 10_000 });
   const acct = session?.accountId ?? "";
-  // Positions and balance in one query: a settle changes both, so reading them together keeps
-  // the provisional payout below from being counted twice or not at all.
-  const account = useQuery({
-    queryKey: ["account", acct],
-    // Keep the newest block's answer: a lagging node must not roll the balance back.
-    queryFn: async () => {
-      const r = await api.account(acct), last = qc.getQueryData<typeof r>(["account", acct]);
-      return last && last.height > r.height ? last : r;
-    },
-    enabled: !!session,
-    refetchInterval: 2000,
-  });
+  // Positions and balance in one query read at one block (lib/hooks.ts).
+  const account = useAccount(acct);
+  mktRef.current = mkt;
+  const pickMarket = (m: number) => {
+    if (m === mkt) return;
+    try {
+      localStorage.setItem(MKEY, String(m));
+    } catch {}
+    const q = new URLSearchParams(location.search);
+    q.set("m", String(m));
+    history.replaceState(null, "", `?${q}`);
+    boardRef.current = null;
+    Object.assign(edit.current, { touched: false, lo: NaN, hi: NaN, win: 0, drag: null });
+    setMkt(m);
+  };
   const balance = { data: account.data?.bal };
   const vault = useQuery({ queryKey: ["vault"], queryFn: api.vault, staleTime: 60_000 });
   const tq = useQuery({ queryKey: ["tourney", tid], queryFn: () => api.tourney(tid!), enabled: tid != null, refetchInterval: 2000 });
@@ -104,10 +119,9 @@ export default function Game() {
   fmtRef.current = fmt;
   tWinRef.current = tour ? { lo: tour.start_ms / WINDOW_MS, hi: tour.end_ms / WINDOW_MS - 1 } : null;
   const openTourney = (id: number | null) => {
-    history.replaceState(null, "", id ? `?t=${id}` : "/");
+    history.replaceState(null, "", id ? `?t=${id}&m=${mkt}` : `?m=${mkt}`);
     edit.current.win = 0; // re-aim at the first open pipe of the new session
     setTid(id);
-    setSheet(null);
   };
   useEffect(() => {
     const b = board.data;
@@ -136,7 +150,7 @@ export default function Game() {
   useEffect(() => {
     const cv = canvasRef.current!;
     const ctx = cv.getContext("2d")!;
-    let raf = 0, frame = 0, centerU = NaN, recenter = false, view = NaN, lastT = 0;
+    let raf = 0, frame = 0, centerU = NaN, recenter = false, view = NaN, lastT = 0, drawnMkt = 0;
     skin.load();
     const fit = () => {
       const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
@@ -152,6 +166,8 @@ export default function Game() {
       frame++;
       const d = window.devicePixelRatio || 1, W = cv.width / d, H = cv.height / d;
       const b = boardRef.current;
+      // A different market is a different price scale: re-centre the camera on its bird.
+      if (drawnMkt !== mktRef.current) (drawnMkt = mktRef.current), (centerU = NaN), (floaters.current = []);
       const now = Date.now() + (offsetRef.current ?? 0); // chain time: quotes, bet cut-offs
       const spotU = b?.spot ? toU(b.spot, b.tick) : 0;
       const ss = b ? b.samples.map((s) => ({ t: s.ts_ms, u: toU(s.price, b.tick) })) : [];
@@ -190,7 +206,7 @@ export default function Game() {
         // Your bets: solid pipes, one per window, a gap per bet.
         const mine = new Map<number, Gap[]>();
         for (const p of [...serverPos.current, ...pending.current]) {
-          if (p.session_id !== sessRef.current) continue;
+          if (p.session_id !== sessRef.current || (p.market ?? 0) !== mktRef.current) continue;
           const r = resolve(ss, p);
           // Revealed when the bird gets there, never before (the chain may settle while the
           // bird is still LAG_MS behind); the chain's verdict wins once it has one.
@@ -277,9 +293,10 @@ export default function Game() {
     if (!g || Number.isNaN(e.lo)) return;
     ev.currentTarget.setPointerCapture(ev.pointerId);
     const y = ev.clientY - ev.currentTarget.getBoundingClientRect().top;
-    const top = yOf(g, e.hi + 1), bottom = yOf(g, e.lo), grab = Math.max(22, g.rowH * 0.2);
+    const top = yOf(g, e.hi + 1), bottom = yOf(g, e.lo), grab = Math.max(26, g.rowH * 0.22);
     e.touched = true;
     e.drag = Math.abs(y - top) < grab ? "top" : Math.abs(y - bottom) < grab ? "bottom" : "move";
+    e.moved = false;
     e.y0 = y;
     e.lo0 = e.lo;
     e.hi0 = e.hi;
@@ -288,13 +305,36 @@ export default function Game() {
     const g = geoRef.current, e = edit.current;
     if (!g || !e.drag) return;
     const y = ev.clientY - ev.currentTarget.getBoundingClientRect().top;
+    if (!e.moved && Math.abs(y - e.y0) < 8) return; // still a tap
+    e.moved = true;
     const dBands = Math.round((uAt(g, y) - uAt(g, e.y0)));
     if (e.drag === "move") (e.lo = e.lo0 + dBands), (e.hi = e.hi0 + dBands);
     else if (e.drag === "top") e.hi = Math.max(e.lo, Math.min(e.lo + MAX_GAP - 1, e.hi0 + dBands));
     else e.lo = Math.min(e.hi, Math.max(e.hi - MAX_GAP + 1, e.lo0 + dBands));
     rerender();
   };
-  const onUp = () => void (edit.current.drag = null);
+  // A tap (no drag) centres the gap on the band you tapped: "I think the bird will be here".
+  const onUp = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    const g = geoRef.current, e = edit.current;
+    if (g && e.drag && !e.moved) {
+      const size = e.hi - e.lo + 1, y = ev.clientY - ev.currentTarget.getBoundingClientRect().top;
+      e.lo = Math.round(uAt(g, y) - size / 2);
+      e.hi = e.lo + size - 1;
+      rerender();
+    }
+    e.drag = null;
+  };
+  // Gap size buttons: grow/shrink around the middle, 1..MAX_GAP bands.
+  const resize = (d: number) => {
+    const e = edit.current;
+    if (Number.isNaN(e.lo)) return;
+    const size = Math.max(1, Math.min(MAX_GAP, e.hi - e.lo + 1 + d));
+    if (size === e.hi - e.lo + 1) return;
+    e.touched = true;
+    if (d > 0) (e.hi - e.lo) % 2 ? (e.hi += 1) : (e.lo -= 1);
+    else (e.hi - e.lo) % 2 ? (e.hi -= 1) : (e.lo += 1);
+    rerender();
+  };
 
   // Drop: bet on the shaped pipe, then move on to the next pipe with the same gap, so
   // tapping Drop again plays the following pipe.
@@ -312,14 +352,14 @@ export default function Game() {
     const opt: Position = {
       id: -Math.random(), band_lo: e.lo, band_hi: e.hi, window_idx: e.win, price_lo: "", price_hi: "",
       window_start_ms: e.win * WINDOW_MS, window_end_ms: (e.win + 1) * WINDOW_MS,
-      placed_at_ms: nowMs, quote_bps: q, stake: amount, session_id: tid ?? 1, status: "Open",
+      placed_at_ms: nowMs, quote_bps: q, stake: amount, session_id: tid ?? 1, status: "Open", market: mkt,
     };
     pending.current.push(opt);
     e.win += 1;
     rerender();
     try {
       const where = { band_lo: opt.band_lo, band_hi: opt.band_hi, window_idx: opt.window_idx, min_quote_bps: Math.floor(q * 0.85) };
-      opt.id = await call<number>(session, tid != null ? "place_chips" : "place", tid != null ? { ...where, session_id: tid, chips: amount } : { ...where, stake: amount });
+      opt.id = await call<number>(session, tid != null ? "place_chips" : "place", tid != null ? { ...where, session_id: tid, chips: amount, market: mkt } : { ...where, stake: amount, market: mkt });
       qc.invalidateQueries({ queryKey: ["account"] });
       qc.invalidateQueries({ queryKey: ["tourney"] });
     } catch (err) {
@@ -356,25 +396,30 @@ export default function Game() {
   const chainNow = Date.now() + (offsetRef.current ?? 0);
   const pipesLeft = !tWinRef.current || e.win <= tWinRef.current.hi;
   const liveQ = b?.spot && !Number.isNaN(e.lo) && pipesLeft ? quoteGap(toU(b.spot, b.tick), b.sigma_ppm, e.lo, e.hi, e.win, Math.min(chainNow, b.last_sample_ms ?? Infinity), pricing) : null;
-  const mineHere = [...pending.current, ...serverPos.current].filter((p) => p.session_id === sess);
+  const mineHere = [...pending.current, ...serverPos.current].filter((p) => p.session_id === sess && (p.market ?? 0) === mkt);
+
+  const size = Number.isNaN(e.lo) ? 2 : e.hi - e.lo + 1;
+  const win = liveQ ? Math.floor((stake * liveQ) / 1e4) : 0;
+  // Why Drop is off, in words.
+  const why = !b?.spot ? "Waiting for price" : !pipesLeft ? "Bell rang" : tid != null && !myRow ? "Join to play" : !liveQ ? "Too safe — narrow it or move it off the bird" : (shownBal ?? 0) < stake ? (tid != null ? "Out of points" : "Balance too low") : "";
+  const mk = markets.data?.find((m) => m.id === mkt);
 
   return (
     <main className="game">
-      {mounted && (
-        <div className="modes" role="tablist" aria-label="Mode">
-          {(["demo", "live"] as const).map((m) => (
-            <button key={m} role="tab" aria-selected={MODE === m} className={MODE === m ? "on" : ""} onClick={() => MODE !== m && setMode(m)}>
-              {m === "demo" ? "Demo" : "Live"}
+      <header className="topbar">
+        <div className="mkts" role="tablist" aria-label="Market">
+          {(markets.data ?? []).map((m) => (
+            <button key={m.id} role="tab" aria-selected={m.id === mkt} className={m.id === mkt ? "on" : ""} onClick={() => pickMarket(m.id)}>
+              {m.label.replace("wNEAR/", "")}
             </button>
           ))}
         </div>
-      )}
-      {mounted && (
-        <div className="corner">
-          <button aria-label="Leaderboard" title="Leaderboard" onClick={() => setSheet("leaders")}>🏆</button>
-          <button aria-label="Tournaments" title="Play friends" onClick={() => setSheet("tourneys")}>⚔︎</button>
-        </div>
-      )}
+        {session && tid == null && (
+          <button className="cash" onClick={() => setCashout(true)} disabled={!balance.data}>
+            Cash out <b>{shownBal == null ? "—" : usd(shownBal)}</b>
+          </button>
+        )}
+      </header>
       {tour && (
         <TourneyBar t={tour} now={chainNow} me={acct} session={session} onLeave={() => openTourney(null)}
           onJoined={() => qc.invalidateQueries({ queryKey: ["tourney"] })} needSession={() => setLine("Play as guest or connect a wallet first")} />
@@ -385,17 +430,18 @@ export default function Game() {
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
-        onPointerCancel={onUp}
+        onPointerCancel={() => void (edit.current.drag = null)}
+        aria-label={`Game board: ${mk?.label ?? "price"} as a bird. Tap where you think it will be, drag to move the gap.`}
       />
       <div className="line" aria-live="polite">
         {offline ? "Board offline, retrying…" : line || (!session ? (
           <button className="link" disabled={busy} onClick={() => start(playAsGuest)}>{skin.copy.guest}</button>
-        ) : mineHere.length === 0 ? skin.copy.hint : "")}
+        ) : mineHere.length === 0 ? "Tap where the bird will be, then Drop" : "")}
       </div>
 
       <section className={`drawer${drawer ? " open" : ""}`}>
         <button className="handle" aria-label="Your trades" onClick={() => setDrawer(!drawer)}><i /></button>
-        <h2>{tid != null ? `Your tournament #${tid} trades` : "Your trades"}</h2>
+        <h2>{tid != null ? `Your tournament #${tid} trades` : `Your ${mk?.label.replace("wNEAR/", "") ?? ""} trades`}</h2>
         <ol className="trades">
           {mineHere.slice(0, 12).map((p) => {
             const st = p.status !== "Open" ? p.status : shown.current.get(keyOf(p)) ?? "Open";
@@ -408,49 +454,60 @@ export default function Game() {
             );
           })}
         </ol>
-        {session && (
-          <div className="money">
-            <button className="link" disabled={busy} onClick={() => money(() => deposit(session))}>Deposit {usd(DEPOSIT_MUSD)}</button>
-            <button className="link" disabled={busy || !balance.data} onClick={() => money(() => withdraw(session, balance.data!))}>
-              Withdraw {usd(balance.data ?? 0)}
-            </button>
-          </div>
-        )}
-        {session && (
-          <button className="link" onClick={() => (signOut(), setSession(null), setDrawer(false))}>
-            Sign out {short(session.accountId)}
-          </button>
-        )}
+        <Link className="link" href="/wallet">Wallet, deposits and full history →</Link>
       </section>
 
       <nav className="bar">
-        <div className="chips">
-          <b>{shownBal == null ? "—" : fmt(shownBal)}</b>
-          <span>{tid != null ? "points" : mounted && FIXTURE ? "demo" : "balance"}</span>
+        <div className="ctl">
+          <div className="gapctl" aria-label="Gap size">
+            <button aria-label="Narrower gap" disabled={size <= 1} onClick={() => resize(-1)}>−</button>
+            <span><b>{size}</b> {size === 1 ? "band" : "bands"}</span>
+            <button aria-label="Wider gap" disabled={size >= MAX_GAP} onClick={() => resize(1)}>+</button>
+          </div>
+          <div className="stakes" role="radiogroup" aria-label="Stake">
+            {STAKES.map((v) => (
+              <button key={v} role="radio" aria-checked={stake === v} className={stake === v ? "on" : ""} onClick={() => setStake(v)}>
+                {tid != null ? (v < 1000 ? v : "1k") : v < 1000 ? `${v / 10}¢` : usd(v).replace(".00", "")}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="stakes" role="radiogroup" aria-label="Stake">
-          {STAKES.map((v) => (
-            <button key={v} role="radio" aria-checked={stake === v} className={stake === v ? "on" : ""} onClick={() => setStake(v)}>
-              {tid != null ? (v < 1000 ? v : "1k") : v < 1000 ? `${v / 10}¢` : usd(v).replace(".00", "")}
+        <div className="act">
+          <div className="chips">
+            <b>{shownBal == null ? "—" : fmt(shownBal)}</b>
+            <span>{tid != null ? "points" : mounted && FIXTURE ? "demo balance" : "balance"}</span>
+          </div>
+          {session && broke ? (
+            <button className="play drop" disabled={busy} onClick={() => money(() => deposit(session))}>
+              <b>{busy ? "…" : `Deposit ${usd(DEPOSIT_MUSD)}`}</b><span>to keep playing</span>
             </button>
-          ))}
+          ) : session ? (
+            <button className="play drop" disabled={!!why} onClick={drop}>
+              {why ? <><b>Drop</b><span>{why}</span></> : <><b>Drop {fmt(stake)} · {mult(liveQ!)}</b><span>win {fmt(win)}</span></>}
+            </button>
+          ) : (
+            <button className="play drop" disabled={busy} onClick={() => start(playWithWallet)}>
+              <b>{busy ? "…" : "Connect wallet"}</b><span>or play as guest above</span>
+            </button>
+          )}
         </div>
-        {session && broke ? (
-          <button className="play" disabled={busy} onClick={() => money(() => deposit(session))}>{busy ? "…" : `Deposit ${usd(DEPOSIT_MUSD)}`}</button>
-        ) : session ? (
-          <button className="play" disabled={!liveQ || (tid != null && !myRow)} onClick={drop}>
-            {liveQ ? `Drop ${mult(liveQ)}` : "Drop"}
-          </button>
-        ) : (
-          <button className="play" disabled={busy} onClick={() => start(playWithWallet)}>{busy ? "…" : skin.copy.play}</button>
-        )}
       </nav>
 
-      <Onboarding hasSession={!!session} onGuest={() => start(playAsGuest)} onWallet={() => start(playWithWallet)} onDemo={() => !FIXTURE && setMode("demo")} />
-      {sheet === "leaders" && <Leaderboard me={acct} onClose={() => setSheet(null)} />}
-      {sheet === "tourneys" && (
-        <Tournaments session={session} onOpen={openTourney} onClose={() => setSheet(null)} needSession={() => (setSheet(null), setLine("Play as guest or connect a wallet first"))} />
+      {cashout && session && (
+        <div className="scrim" onClick={() => setCashout(false)}>
+          <section className="sheet" role="dialog" aria-label="Cash out" onClick={(ev) => ev.stopPropagation()}>
+            <header><h2>Cash out</h2><button className="x" aria-label="Close" onClick={() => setCashout(false)}>×</button></header>
+            <p className="big">{usd(balance.data ?? 0)}</p>
+            <p className="body">{FIXTURE ? "Demo money goes back to zero." : `Goes to ${short(session.accountId)} as ${((balance.data ?? 0) / 10_000).toFixed(2)} testnet NEAR. Open bets keep running and pay into your balance.`}</p>
+            <button className="play wide" disabled={busy || !balance.data} onClick={() => money(() => withdraw(session, balance.data!)).then(() => setCashout(false))}>
+              {busy ? "Cashing out…" : `Cash out ${usd(balance.data ?? 0)}`}
+            </button>
+            <Link className="link" href="/wallet">Send it to another account, or deposit more →</Link>
+          </section>
+        </div>
       )}
+
+      <Onboarding hasSession={!!session} onGuest={() => start(playAsGuest)} onWallet={() => start(playWithWallet)} onDemo={() => !FIXTURE && setMode("demo")} />
     </main>
   );
 }
