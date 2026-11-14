@@ -10,7 +10,7 @@ import { flappy as skin } from "@/skins/flappy";
 import type { Gap } from "@/skins/skin";
 
 const STAKES = [100, 250, 500, 1000];
-const TX_MS = 3000; // a Drop lands on-chain ~2-3 s after the tap; its pipe must not have started by then
+const TX_MS = 4500; // a Drop lands on-chain ~2-4 s after the tap; its pipe must not have started by then
 // One key per bet that survives the optimistic -> on-chain id swap (Drop moves on a pipe, so
 // a window never holds two of your bets with the same gap).
 const keyOf = (p: Position) => `${p.window_idx}:${p.band_lo}:${p.band_hi}`;
