@@ -65,6 +65,14 @@ async function settleLoop() {
         await engine.callFunction({ contractId: CONTRACT, methodName: "settle", args: { position_ids: ids }, gas: 300n * TGAS, waitUntil: "INCLUDED" });
         console.log(`settled ${ids.length}`);
       }
+      // Tournaments: pay out at the bell once every bet in them is settled.
+      for (const id of (await view<number[]>(CONTRACT, "tourneys_live")) ?? []) {
+        const t = await view<{ end_ms: number; open: number }>(CONTRACT, "tourney", { id });
+        if (t && t.open === 0 && Date.now() >= t.end_ms + 1000) {
+          await engine.callFunction({ contractId: CONTRACT, methodName: "settle_tourney", args: { id }, gas: 300n * TGAS, waitUntil: "INCLUDED" });
+          console.log(`tourney ${id} settled`);
+        }
+      }
     } catch (e) {
       console.log("settle:", short(e));
     }
