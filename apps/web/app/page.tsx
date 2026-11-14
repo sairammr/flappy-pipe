@@ -401,7 +401,8 @@ export default function Game() {
   const size = Number.isNaN(e.lo) ? 2 : e.hi - e.lo + 1;
   const win = liveQ ? Math.floor((stake * liveQ) / 1e4) : 0;
   // Why Drop is off, in words.
-  const why = !b?.spot ? "Waiting for price" : !pipesLeft ? "Bell rang" : tid != null && !myRow ? "Join to play" : !liveQ ? "Too safe — narrow it or move it off the bird" : (shownBal ?? 0) < stake ? (tid != null ? "Out of points" : "Balance too low") : "";
+  const lobby = tour && chainNow < tour.start_ms - 12_000; // first pipe still off screen
+  const why = !b?.spot ? "Waiting for price" : lobby ? `Starts in ${Math.ceil((tour.start_ms - chainNow) / 1000)} s — watch the bird` : !pipesLeft ? "Bell rang" : tid != null && !myRow ? "Join to play" : !liveQ ? "Too safe — narrow it or move it off the bird" : (shownBal ?? 0) < stake ? (tid != null ? "Out of points" : "Balance too low") : "";
   const mk = markets.data?.find((m) => m.id === mkt);
 
   return (

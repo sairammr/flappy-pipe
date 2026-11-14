@@ -10,7 +10,20 @@ let samples: { ts_ms: number; price: number }[] = [];
 let last = 0;
 const positions: Position[] = [];
 const SIGMA_PPM = seed.sigma_bps * 100;
-let balance = 0; // mUSD: 1 unit = $0.001
+// mUSD (1 unit = $0.001), kept in this browser so a reload doesn't wipe the demo wallet
+const BKEY = "riptide:demo-balance";
+let balance = (() => {
+  try {
+    return Number(localStorage.getItem(BKEY)) || 0;
+  } catch {
+    return 0;
+  }
+})();
+const save = () => {
+  try {
+    localStorage.setItem(BKEY, String(balance));
+  } catch {}
+};
 export const VAULT = { cash_edge_bps: 300, cash_max_quote_bps: 1_000_000, max_cash_stake: 1000 };
 let nextId = 1000;
 
@@ -36,6 +49,7 @@ function settle(now: number) {
     if (!r) continue;
     p.status = r.status;
     balance += p.status === "Won" ? Math.floor((p.stake * p.quote_bps) / 1e4) : p.status === "Refunded" ? p.stake : 0;
+    save();
   }
 }
 
@@ -56,8 +70,8 @@ export const getBalance = () => balance;
 
 export function call(method: string, args: Record<string, unknown>): unknown {
   const a = args as Record<string, number>;
-  if (method === "deposit") return void (balance += a.musd!);
-  if (method === "withdraw") return void (balance = Math.max(0, balance - a.musd!));
+  if (method === "deposit") return void ((balance += a.musd!), save());
+  if (method === "withdraw") return void ((balance = Math.max(0, balance - a.musd!)), save());
   if (method !== "place") return;
   const { band_lo, band_hi, window_idx, min_quote_bps, stake } = a as Record<string, number>;
   const now = Date.now();
@@ -67,6 +81,7 @@ export function call(method: string, args: Record<string, unknown>): unknown {
   if (q == null || q < min_quote_bps) throw new Error("quote moved");
   if (stake > balance) throw new Error("insufficient balance");
   balance -= stake;
+  save();
   const p: Position = {
     id: nextId++, band_lo, band_hi, window_idx,
     price_lo: big(band_lo * tick), price_hi: big((band_hi + 1) * tick),
