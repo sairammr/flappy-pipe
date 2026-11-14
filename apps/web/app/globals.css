@@ -15,7 +15,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: 0.6; cursor: default; }
 
-.game { position: relative; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; --bar-h: calc(116px + env(safe-area-inset-bottom)); }
+.game { position: relative; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; --bar-h: calc(64px + env(safe-area-inset-bottom)); }
 .board { flex: 1; width: 100%; min-height: 0; display: block; touch-action: none; cursor: crosshair; }
 
 .line {
@@ -28,19 +28,14 @@ button:disabled { opacity: 0.6; cursor: default; }
 
 .bar {
   height: var(--bar-h); padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
-  display: flex; flex-direction: column; gap: 8px; background: var(--bar); border-top: 1px solid var(--line); position: relative; z-index: 3;
+  display: flex; align-items: center; gap: 8px; background: var(--bar); border-top: 1px solid var(--line); position: relative; z-index: 3;
 }
-.ctl, .act { display: flex; align-items: center; gap: 10px; }
+@media (min-width: 900px) { .bar { padding-left: max(12px, calc(50% - 360px)); padding-right: max(12px, calc(50% - 360px)); } }
 .gapctl { display: flex; align-items: center; gap: 2px; background: rgba(255, 255, 255, 0.06); border-radius: 12px; padding: 4px; flex: none; }
-.gapctl button { width: 36px; height: 36px; border-radius: 9px; font-size: 22px; font-weight: 700; background: rgba(255, 255, 255, 0.08); }
-.gapctl span { min-width: 64px; text-align: center; font-size: 13px; color: var(--muted); }
+.gapctl button { width: 32px; height: 36px; border-radius: 9px; font-size: 20px; font-weight: 700; background: rgba(255, 255, 255, 0.08); }
+.gapctl span { min-width: 34px; text-align: center; display: flex; flex-direction: column; line-height: 1; }
+.gapctl span i { font-style: normal; font-size: 10px; color: var(--muted); margin-top: 2px; }
 .gapctl span b { color: var(--text); font-size: 15px; }
-.play.drop { flex: 1; height: 52px; display: flex; flex-direction: column; justify-content: center; align-items: center; line-height: 1.15; border-radius: 14px; }
-.play.drop b { font-size: 17px; font-weight: 800; }
-.play.drop span { font-size: 12px; font-weight: 700; opacity: 0.75; }
-.play.drop:disabled { background: rgba(255, 255, 255, 0.1); color: var(--text); opacity: 1; }
-.play.drop:disabled span { color: var(--muted); opacity: 1; }
-.play.drop:not(:disabled):active { transform: scale(0.98); }
 .chips { display: flex; flex-direction: column; min-width: 64px; line-height: 1.1; }
 .chips b { font-family: var(--mono); font-size: 17px; font-variant-numeric: tabular-nums; }
 .chips span { font-size: 11px; color: var(--muted); }
@@ -218,5 +213,21 @@ a.play { color: var(--on-accent); }
 .ok { color: #3ddc6e; font-size: 13px; font-weight: 700; }
 .bullets { padding-left: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; line-height: 1.5; }
 .page .err a { color: inherit; }
-@media (min-width: 900px) { .bar .ctl, .bar .act { width: 100%; max-width: 720px; margin: 0 auto; } }
+
 @media (max-width: 899px) { .page { padding-top: 68px; } }
+
+/* in-game Drop: a chunky arcade button that follows the aimed pipe */
+.gdrop {
+  position: absolute; top: 0; left: 0; z-index: 3; visibility: hidden; will-change: transform;
+  display: flex; flex-direction: column; align-items: center; line-height: 1.1; padding: 9px 16px 10px; border-radius: 16px;
+  background: var(--accent); color: var(--on-accent); border: 3px solid #3b2a14; box-shadow: 0 5px 0 #3b2a14, 0 10px 24px rgba(0, 0, 0, 0.25);
+  white-space: nowrap; transition: transform 90ms linear, box-shadow 80ms;
+}
+.gdrop b { font-size: 18px; font-weight: 900; letter-spacing: 0.02em; }
+.gdrop span { font-size: 12px; font-weight: 800; opacity: 0.8; }
+.gdrop:not(:disabled):active { box-shadow: 0 1px 0 #3b2a14, 0 4px 12px rgba(0, 0, 0, 0.25); translate: 0 4px; }
+.gdrop:not(:disabled) { animation: nudge 1.6s ease-in-out infinite; }
+@keyframes nudge { 50% { box-shadow: 0 5px 0 #3b2a14, 0 0 0 6px rgba(255, 225, 77, 0.35), 0 10px 24px rgba(0, 0, 0, 0.25); } }
+.gdrop.off, .gdrop:disabled { background: rgba(20, 16, 10, 0.78); color: #f6f1e3; border-color: rgba(255, 255, 255, 0.25); box-shadow: none; opacity: 1; }
+.gdrop.off span { color: #ffd9a8; opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .gdrop { animation: none !important; transition: none; } }

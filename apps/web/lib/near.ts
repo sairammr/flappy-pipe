@@ -238,7 +238,15 @@ export async function sendNear(s: Session, to: string, yocto: bigint) {
 export function reason(e: unknown): string {
   const m = String((e as Error)?.message ?? e);
   const panic = m.match(/panicked: ([^"\n]+)/)?.[1] ?? m.match(/ExecutionError\("([^"]+)/)?.[1];
-  return (panic ?? m).replace(/^Smart contract panicked: /, "").slice(0, 80);
+  const r = (panic ?? m).replace(/^Smart contract panicked: /, "");
+  // Contract guard messages, in player words.
+  const words: Record<string, string> = {
+    "quote below minimum": "Price moved before your Drop landed — tap again",
+    "window not placeable": "That pipe already started — aim at the next one",
+    "price stale": "Price feed is catching up — try in a second",
+    "house limit": "House limit reached for now — try a smaller stake",
+  };
+  return (words[r] ?? r).slice(0, 80);
 }
 
 export function ping() {

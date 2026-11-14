@@ -43,6 +43,7 @@ export default function Game() {
   const rerender = () => setTick((n) => n + 1);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dropRef = useRef<HTMLButtonElement>(null); // the in-game Drop button, moved by the render loop
   const boardRef = useRef<Board | null>(null);
   const geoRef = useRef<Geo | null>(null);
   const offsetRef = useRef<number | null>(null);
@@ -253,6 +254,18 @@ export default function Game() {
           else if (w > e.win && (!tw || w <= tw.hi)) skin.column(ctx, col(w), [{ ...gapOf(e.lo, e.hi), state: "aim", label: null, sub: null }], true, tMs);
         }
 
+        // The Drop button rides under the gap of the pipe you're aiming at (above it if the gap
+        // sits low), so the action lives on the board, next to what it bets on.
+        const btn = dropRef.current;
+        if (btn) {
+          const bw = btn.offsetWidth, bh = btn.offsetHeight, floor = g.h - 8;
+          const x = Math.max(bw / 2 + 8, Math.min(W - bw / 2 - 8, xOf(g, (e.win + 1) * WINDOW_MS)));
+          let y = yOf(g, e.shownLo) + 22;
+          if (y + bh > floor) y = Math.max(8, yOf(g, e.shownHi + 1) - 22 - bh);
+          btn.style.transform = `translate(${Math.round(x - bw / 2)}px, ${Math.round(y)}px)`;
+          btn.style.visibility = "visible";
+        }
+
         const trail = ss.filter((s) => s.t < view).map((s) => ({ x: xOf(g, s.t), y: yOf(g, s.u) })).filter((p) => p.x > -20);
         skin.mover(ctx, trail, { x: g.nowX, y: yOf(g, birdU) }, frame);
 
@@ -358,7 +371,7 @@ export default function Game() {
     e.win += 1;
     rerender();
     try {
-      const where = { band_lo: opt.band_lo, band_hi: opt.band_hi, window_idx: opt.window_idx, min_quote_bps: Math.floor(q * 0.85) };
+      const where = { band_lo: opt.band_lo, band_hi: opt.band_hi, window_idx: opt.window_idx, min_quote_bps: Math.max(10_500, Math.floor(q * 0.6)) };
       opt.id = await call<number>(session, tid != null ? "place_chips" : "place", tid != null ? { ...where, session_id: tid, chips: amount, market: mkt } : { ...where, stake: amount, market: mkt });
       qc.invalidateQueries({ queryKey: ["account"] });
       qc.invalidateQueries({ queryKey: ["tourney"] });
@@ -436,8 +449,8 @@ export default function Game() {
       />
       <div className="line" aria-live="polite">
         {offline ? "Board offline, retrying…" : line || (!session ? (
-          <button className="link" disabled={busy} onClick={() => start(playAsGuest)}>{skin.copy.guest}</button>
-        ) : mineHere.length === 0 ? "Tap where the bird will be, then Drop" : "")}
+          <button className="link" disabled={busy} onClick={() => start(playWithWallet)}>or connect a NEAR wallet</button>
+        ) : mineHere.length === 0 ? "Tap where the bird will be, then hit Drop" : "")}
       </div>
 
       <section className={`drawer${drawer ? " open" : ""}`}>
@@ -458,39 +471,40 @@ export default function Game() {
         <Link className="link" href="/wallet">Wallet, deposits and full history →</Link>
       </section>
 
+      {/* In-game action: follows the aimed pipe (positioned by the render loop). */}
+      <button
+        ref={dropRef}
+        className={`gdrop${session && !broke && why ? " off" : ""}`}
+        disabled={session ? (broke ? busy : !!why) : busy}
+        onClick={session ? (broke ? () => money(() => deposit(session)) : drop) : () => start(playAsGuest)}
+      >
+        {!session ? (
+          <><b>{busy ? "…" : "▶ Play"}</b><span>as guest · $10</span></>
+        ) : broke ? (
+          <><b>{busy ? "…" : `Deposit ${usd(DEPOSIT_MUSD)}`}</b><span>to keep playing</span></>
+        ) : why ? (
+          <><b>Drop</b><span>{why}</span></>
+        ) : (
+          <><b>▼ Drop {mult(liveQ!)}</b><span>{fmt(stake)} → win {fmt(win)}</span></>
+        )}
+      </button>
+
       <nav className="bar">
-        <div className="ctl">
-          <div className="gapctl" aria-label="Gap size">
-            <button aria-label="Narrower gap" disabled={size <= 1} onClick={() => resize(-1)}>−</button>
-            <span><b>{size}</b> {size === 1 ? "band" : "bands"}</span>
-            <button aria-label="Wider gap" disabled={size >= MAX_GAP} onClick={() => resize(1)}>+</button>
-          </div>
-          <div className="stakes" role="radiogroup" aria-label="Stake">
-            {STAKES.map((v) => (
-              <button key={v} role="radio" aria-checked={stake === v} className={stake === v ? "on" : ""} onClick={() => setStake(v)}>
-                {tid != null ? (v < 1000 ? v : "1k") : v < 1000 ? `${v / 10}¢` : usd(v).replace(".00", "")}
-              </button>
-            ))}
-          </div>
+        <div className="chips">
+          <b>{shownBal == null ? "—" : fmt(shownBal)}</b>
+          <span>{tid != null ? "points" : mounted && FIXTURE ? "demo" : "balance"}</span>
         </div>
-        <div className="act">
-          <div className="chips">
-            <b>{shownBal == null ? "—" : fmt(shownBal)}</b>
-            <span>{tid != null ? "points" : mounted && FIXTURE ? "demo balance" : "balance"}</span>
-          </div>
-          {session && broke ? (
-            <button className="play drop" disabled={busy} onClick={() => money(() => deposit(session))}>
-              <b>{busy ? "…" : `Deposit ${usd(DEPOSIT_MUSD)}`}</b><span>to keep playing</span>
+        <div className="gapctl" aria-label="Gap size">
+          <button aria-label="Narrower gap" disabled={size <= 1} onClick={() => resize(-1)}>−</button>
+          <span><b>{size}</b><i>gap</i></span>
+          <button aria-label="Wider gap" disabled={size >= MAX_GAP} onClick={() => resize(1)}>+</button>
+        </div>
+        <div className="stakes" role="radiogroup" aria-label="Stake">
+          {STAKES.map((v) => (
+            <button key={v} role="radio" aria-checked={stake === v} className={stake === v ? "on" : ""} onClick={() => setStake(v)}>
+              {tid != null ? (v < 1000 ? v : "1k") : v < 1000 ? `${v / 10}¢` : usd(v).replace(".00", "")}
             </button>
-          ) : session ? (
-            <button className="play drop" disabled={!!why} onClick={drop}>
-              {why ? <><b>Drop</b><span>{why}</span></> : <><b>Drop {fmt(stake)} · {mult(liveQ!)}</b><span>win {fmt(win)}</span></>}
-            </button>
-          ) : (
-            <button className="play drop" disabled={busy} onClick={() => start(playWithWallet)}>
-              <b>{busy ? "…" : "Connect wallet"}</b><span>or play as guest above</span>
-            </button>
-          )}
+          ))}
         </div>
       </nav>
 
