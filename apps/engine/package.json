@@ -1,0 +1,12 @@
+{
+  "name": "@riptide/engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.ts",
+    "verify": "bun run verify.ts"
+  },
+  "dependencies": {
+    "near-api-js": "^7.5.3"
+  }
+}
