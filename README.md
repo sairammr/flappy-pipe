@@ -7,9 +7,10 @@ it will be when it reaches the next pipe.
   wNEAR/RFT (pool 0), wNEAR/ELIXIR (pool 275), wNEAR/GOLD (pool 274), one shared balance.
   The contract reads each pool itself with a cross-contract `get_pool` call. No off-chain
   price signer is involved.
-- A pipe stands every 5 s. Drag the gap of the next pipe up or down, or stretch its lips, then
-  tap **Drop**. If the bird is inside the gap when it reaches the pipe, you win
-  stake × multiplier. If it hits the pipe, you lose the stake.
+- A pipe stands every 5 s. Tap where you think the bird will be (or drag the gap; − / + set
+  its size), then hit the **Drop** button that rides under the pipe. If the bird is inside
+  the gap when it reaches the pipe, you win stake × multiplier. If it hits the pipe, you
+  lose the stake.
 - The multiplier is `1 / P(price at the pipe inside the gap)`, computed from realized
   volatility, minus a 3% house edge and capped at 100x. A narrow gap, or one far from the
   bird, pays more.
@@ -23,9 +24,10 @@ it will be when it reaches the next pipe.
 | Do | See |
 |---|---|
 | Open the app and pick **Demo** | Local simulator with a pretend $10. No chain, no wallet. |
-| Pick **Live** and tap **Play as guest** | About 10 s later you have a fresh testnet account holding $10 in the game, with zero wallet prompts |
+| Pick **Live** and tap **▶ Play** (on the board) | About 10 s later you have a fresh testnet account holding $10 in the game, with zero wallet prompts |
+| Or **Wallet → Connect NEAR wallet** | One approval adds a function-call key limited to game methods; a deposit is one more approval; every Drop after that signs silently |
 | Pick **RFT / ELIXIR / GOLD** at the top | The board switches to that pool's live price |
-| Tap where you think the bird will be (or drag the gap; − / + change its size), then **Drop $0.10 · 2.4x** | Your balance drops by the stake right away. The pipe turns solid with "2.4x / win $0.24" |
+| Tap where you think the bird will be (or drag the gap; − / + change its size), then **▼ Drop 2.4x** | Your balance drops by the stake right away. The pipe turns solid with "2.4x / win $0.24". If Drop is grey it says why ("Too safe — narrow it…") |
 | Watch the bird reach that pipe | Inside the gap: green flash and "+$0.14 Through!", and the balance goes up at once. On the pipe: red pipe, shake and "−$0.10 Hit the pipe". The chain's `settle` confirms it a few seconds later |
 | **Leaderboard** (sidebar; ☰ on phones) | Global on-chain cash P&L, win rate, best multiplier, your rank |
 | **Multiplayer** → $1 · 3 min · GOLD → **Create** | A tournament with a link `/?t=<id>&m=<market>` to copy. Friends open it and tap **Join $1** |
@@ -37,7 +39,7 @@ it will be when it reaches the next pipe.
 ```sh
 bun install
 bun run verify          # one real-money round on testnet; prints every tx as a nearblocks link
-docker exec riptide-build bash -c 'cd /w && cargo test'   # 30 contract tests (Rust runs in Docker here)
+docker exec riptide-build bash -c 'cd /w && cargo test'   # 31 contract tests (Rust runs in Docker here)
 bun apps/web/lib/board.check.ts                             # the client's copy of the settle rule
 ```
 
@@ -45,7 +47,9 @@ bun apps/web/lib/board.check.ts                             # the client's copy 
 
 ```sh
 bun install
-ALWAYS_ON=1 bun run engine                 # :8787 — poke 1 Hz, settle 2 s, tournaments, swap bot, NPCs, guest faucet
+bun run engine                             # :8787 — poke every market every 2 s, settle 2 s, tournaments,
+                                           # swap bot, guest faucet; idles (10 s pokes) when no page pings it
+                                           # ALWAYS_ON=1 never idles; NPCS=1 adds free-chip NPC traders
 cd apps/web && cp .env.example .env.local  # set NEXT_PUBLIC_ENGINE_URL=http://localhost:8787
 bunx next dev -p 3001
 ```
@@ -63,7 +67,7 @@ Contract: `contracts/riptide` (near-sdk 5.30). Build with `cargo near build non-
 Rhea pool 0 ──get_pool──▶ riptide-6024.testnet ◀──place / settle── browser (session key, no popups)
      ▲                       │  samples ring (128), gate prices,      ▲
      │ swaps (bot)           │  bets, vault, stats, tournaments       │ board / positions views
-     └──── engine (Bun) ─────┴── poke 1 Hz, settle 2 s, settle_tourney┘
+     └──── engine (Bun) ─────┴── poke 0.5 Hz, settle 2 s, settle_tourney┘
 ```
 
 - **Oracle.** `poke()` → `get_pool` → `on_pool` (`#[private]`, `#[callback_result]`) records
@@ -102,6 +106,9 @@ Interface reference: `docs/IMPLEMENTATION.md`. Project state and decisions: `doc
 | `riptide-6024-npc1/2/3.testnet` | NPC traders |
 
 Key transactions (`https://testnet.nearblocks.io/txns/<hash>`):
+- v4 upgrade (markets) + `migrate`: `CD9y3jUMWnprc8GQYGXnmXs1f2Pyo8bGf7uxs5eMrBZo`
+- Wallet sign-in test (NEAR CLI wallet via near-connect): add game key `Cvr9sv1j6Ar8QyBZAVdfd6nuPa8MWvBH63F9fQSUQjYW`, $1 deposit `G8Fvoc7DtisKM2znepqwsUX6JmUyqWT4D61HnvXXnvw`, silent Drop with the session key `23E1dGtbmgxq4MTrCzn2fXZo9CMdZPiFd9zbfUdLaoB1`
+- 2-player tournament #2 settled at the bell by the engine (tie, $2 pot split $1/$1)
 - v3 upgrade (gate rule, leaderboard, tournaments) + `migrate`: `7ooWKBU5unLVhQRbWdXGfKcaMKUR8dSY1n7yTpcJ8GY5`
 - v2 upgrade (cash mode): `3nCKwMqpgSwXkpND3FwzopNoXcYg6sS81Vj5rRshYaqy`
 - First deploy: `CDAenqY93n8xMKK2vPXRHoAppGZarYB5PUYcx5835XE1`
@@ -126,6 +133,21 @@ Key transactions (`https://testnet.nearblocks.io/txns/<hash>`):
   in between are unpriced and those bets refund. Nothing is lost, but nothing is won.
 - **NEAR Intents** is not used. The project is testnet-only, and 1Click / `intents.near` are
   mainnet services.
+
+## Demo video
+
+`video/` is a [Remotion](https://remotion.dev) project: animated SVG scenes around real
+screen recordings of the live testnet app (`video/public/clips/`, recorded with Playwright).
+`cd video && npm i && npx remotion render Pitch out/riptide-pitch.mp4`. The voiceover is
+generated per scene with Soniox TTS (`SONIOX_API_KEY=… bun scripts/voiceover.ts`); captions
+show the same lines, so the video works muted.
+
+## Hackathon disclosures
+
+- Built during NEAR HACKATHON (Nov 2026); all commits are in the window. No pre-existing
+  product or chain port (Q-001, Q-002).
+- Libraries (Q-005): near-sdk (Rust), near-api-js, @hot-labs/near-connect, Next.js, React,
+  TanStack Query, Bun, Remotion, Playwright (recording/tests only).
 
 ## Credits and AI disclosure
 
