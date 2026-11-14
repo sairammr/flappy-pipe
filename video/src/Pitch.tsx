@@ -239,7 +239,7 @@ const Fair: React.FC = () => {
         </g>
       </svg>
       <div style={{ position: "absolute", left: 140, top: 880, opacity: formula, fontFamily: HEAD, fontSize: 50, color: C.cream }}>
-        multiplier = <span style={{ color: C.sun }}>1 ÷ P</span> minus a 3% edge → <span style={{ color: C.sun }}>2.7x</span>
+        multiplier = <span style={{ color: C.sun }}>1 / P</span> minus a 3% edge → <span style={{ color: C.sun }}>2.7x</span>
       </div>
     </AbsoluteFill>
   );
