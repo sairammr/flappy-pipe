@@ -31,7 +31,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <button className="burger" aria-label="Menu" onClick={() => setOpen(true)}>☰</button>
       {open && <div className="navscrim" onClick={() => setOpen(false)} />}
       <aside className={`side${open ? " open" : ""}`}>
-        <Link href="/" className="brand">Riptide</Link>
+        <Link href="/" className="brand">Flappy Pipe</Link>
         <nav>
           {NAV.map((n) => (
             <Link key={n.href} href={n.href} className={path === n.href ? "on" : ""}>

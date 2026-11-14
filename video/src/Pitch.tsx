@@ -170,7 +170,7 @@ const Solution: React.FC = () => {
         <Flight width={1920} progress={interpolate(f, [0, durationInFrames], [0.05, 0.99], clamp)} pipes={[0.38, 0.58, 0.78]} offsets={[0, 95, -12]} />
       </div>
       <div style={{ position: "absolute", top: 70, width: "100%", textAlign: "center" }}>
-        <h1 style={{ fontFamily: HEAD, fontSize: 150, margin: 0, color: C.cream, WebkitTextStroke: `8px ${C.line}`, paintOrder: "stroke" }}>Riptide</h1>
+        <h1 style={{ fontFamily: HEAD, fontSize: 150, margin: 0, color: C.cream, WebkitTextStroke: `8px ${C.line}`, paintOrder: "stroke" }}>Flappy Pipe</h1>
       </div>
       <div style={{ position: "absolute", top: 270, width: "100%", display: "flex", justifyContent: "center", gap: 20 }}>
         <Step t={3.5} n="1" h="Bird = live price" />
@@ -367,7 +367,7 @@ const Close: React.FC = () => {
       <Rise delay={8}><p style={{ fontFamily: BODY, color: C.muted, fontSize: 40, margin: "16px 0 40px", textAlign: "center" }}>Live on NEAR testnet · guest play in 10 seconds · tournaments with friends</p></Rise>
       <Rise delay={16}>
         <div style={{ display: "flex", gap: 20 }}>
-          <span style={{ background: C.sun, color: C.ink, fontFamily: BODY, fontWeight: 700, fontSize: 36, padding: "14px 30px", borderRadius: 999 }}>riptide-navy.vercel.app</span>
+          <span style={{ background: C.sun, color: C.ink, fontFamily: BODY, fontWeight: 700, fontSize: 36, padding: "14px 30px", borderRadius: 999 }}>flappy-pipe.vercel.app</span>
           <span style={{ background: C.cream, color: C.ink, fontFamily: BODY, fontWeight: 700, fontSize: 36, padding: "14px 30px", borderRadius: 999 }}>github.com/sairammr/riptide</span>
         </div>
       </Rise>

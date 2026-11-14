@@ -1,4 +1,4 @@
-# Riptide
+# Flappy Pipe
 
 Flappy Bird where the bird is a live on-chain price. You bet real (testnet) dollars on where
 it will be when it reaches the next pipe.
@@ -19,7 +19,7 @@ it will be when it reaches the next pipe.
 
 **Testnet only.** $10 = 1 testnet NEAR (`yocto_per_unit = 1e20`, unit = mUSD = $0.001).
 
-**Play it:** https://riptide-navy.vercel.app (web on Vercel; the engine that pokes prices, settles
+**Play it:** https://flappy-pipe.vercel.app (web on Vercel; the engine that pokes prices, settles
 and creates guest accounts runs on the team's machine behind a tunnel during judging). If the
 board ever says "offline", run it locally (below) — everything it needs is on-chain.
 **Video:** [`docs/riptide-pitch.mp4`](docs/riptide-pitch.mp4) (2 min, voiced) — also attached to the X post.

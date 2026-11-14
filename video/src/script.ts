@@ -13,7 +13,7 @@ export const SCENES: Scene[] = [
   {
     id: "solution",
     seconds: 9,
-    say: "Riptide fixes both. Every pipe is five seconds. Tap where you think the bird will be, hit Drop, and your multiplier locks on-chain.",
+    say: "Flappy Pipe fixes both. Every pipe is five seconds. Tap where you think the bird will be, hit Drop, and your multiplier locks on-chain.",
   },
   {
     id: "demo",
@@ -37,7 +37,7 @@ export const SCENES: Scene[] = [
   },
   { id: "proof", seconds: 7, say: "Three live markets. Thirty-one contract tests. Every claim reproducible from the README." },
   { id: "next", seconds: 6, say: "Next: mainnet, deeper pools, and NEAR Intents deposits from any chain." },
-  { id: "close", seconds: 7, say: "Riptide. Fly the price. Play it now, and tell us which market we should add next." },
+  { id: "close", seconds: 7, say: "Flappy Pipe. Fly the price. Play it now, and tell us which market we should add next." },
 ];
 
 export const FPS = 30;

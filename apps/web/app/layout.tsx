@@ -5,7 +5,7 @@ import { Shell } from "./shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Riptide",
+  title: "Flappy Pipe",
   description: "Flappy Bird where the bird is a live on-chain price. Bet testnet dollars on where it flies, settled on NEAR.",
 };
 export const viewport: Viewport = { width: "device-width", initialScale: 1, maximumScale: 1, themeColor: "#14120e" };
