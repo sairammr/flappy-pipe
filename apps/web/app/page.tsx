@@ -44,6 +44,7 @@ export default function Game() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dropRef = useRef<HTMLButtonElement>(null); // the in-game Drop button, moved by the render loop
+  const fundedBy = useRef(0); // a new account's first deposit may not be readable for a few seconds
   const boardRef = useRef<Board | null>(null);
   const geoRef = useRef<Geo | null>(null);
   const offsetRef = useRef<number | null>(null);
@@ -294,6 +295,7 @@ export default function Game() {
     setBusy(true);
     try {
       setSession(await how());
+      fundedBy.current = Date.now() + 20_000;
     } catch (e) {
       setLine(reason(e));
     } finally {
@@ -392,7 +394,8 @@ export default function Game() {
     .reduce((a, p) => a + (shown.current.get(keyOf(p)) === "Won" ? payOf(p) : shown.current.get(keyOf(p)) === "Refunded" ? p.stake : 0), 0);
   const base = tid != null ? myRow?.chips : balance.data;
   const shownBal = base == null ? null : base - inflight + decided;
-  const broke = tid == null && session != null && shownBal != null && shownBal < STAKES[0]!;
+  const funding = session != null && Date.now() < fundedBy.current && (shownBal ?? 0) < STAKES[0]!;
+  const broke = !funding && tid == null && session != null && shownBal != null && shownBal < STAKES[0]!;
   const money = async (f: () => Promise<unknown>) => {
     if (!session) return;
     setBusy(true);
@@ -475,12 +478,14 @@ export default function Game() {
       {/* In-game action: follows the aimed pipe (positioned by the render loop). */}
       <button
         ref={dropRef}
-        className={`gdrop${session && !broke && why ? " off" : ""}`}
-        disabled={session ? (broke ? busy : !!why) : busy}
+        className={`gdrop${session && !broke && (why || funding) ? " off" : ""}`}
+        disabled={session ? (broke ? busy : funding || !!why) : busy}
         onClick={session ? (broke ? () => money(() => deposit(session)) : drop) : () => start(playAsGuest)}
       >
         {!session ? (
-          <><b>{busy ? "…" : "▶ Play"}</b><span>as guest · $10</span></>
+          <><b>{busy ? "Creating…" : "▶ Play"}</b><span>{busy ? "your $10 testnet account" : "as guest · $10"}</span></>
+        ) : funding ? (
+          <><b>Funding your $10…</b><span>first deposit landing on-chain</span></>
         ) : broke ? (
           <><b>{busy ? "…" : `Deposit ${usd(DEPOSIT_MUSD)}`}</b><span>to keep playing</span></>
         ) : why ? (

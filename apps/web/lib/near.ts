@@ -248,6 +248,7 @@ export function reason(e: unknown): string {
     "window not placeable": "That pipe already started — aim at the next one",
     "price stale": "Price feed is catching up — try in a second",
     "house limit": "House limit reached for now — try a smaller stake",
+    "one guest per 10 min": "One free guest per network every 10 min — try Demo or connect a wallet",
   };
   return (words[r] ?? r).slice(0, 80);
 }
