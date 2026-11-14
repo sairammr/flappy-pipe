@@ -6,6 +6,22 @@ pre-pivot) and the parts of `SPEC.md` listed in §9.
 
 ---
 
+## 0. Update 2026-11-14 ~18:30 UTC (supersedes §1, §8 order, parts of §2/§10)
+
+Contract v3 deployed + migrated (tx `7ooWKBU5unLVhQRbWdXGfKcaMKUR8dSY1n7yTpcJ8GY5`):
+**gate rule** (win iff the price at the window end, interpolated between the
+samples around it and stored at poke time, is in the gap — replaces
+pass-through, so the pricer is now exact), quotes timed from the last sample,
+global leaderboard (`leaders`, `stats`), tournaments (`create_tourney`,
+`join_tourney`, `settle_tourney`, `tourney`, `tourneys_live`), hardened
+`set_config`. Web: bird replays samples 4 s behind chain, results decided on
+screen at the gate, onboarding, 🏆 leaderboard, ⚔ tournaments with `/?t=<id>`,
+RPC failover. Engine settles tournaments. Verified: 30 contract tests,
+`bun run verify` OK, live single-player and a 2-player tournament in headless
+browsers. Live status and what's left: `docs/CHECKLIST.md`. Repo pushed to
+private `github.com/sairammr/riptide`. Pitch deck: Slides artifact
+`https://claude.ai/artifact/AcL2RQUSWoGVRHTkFm4QDD`.
+
 ## 1. State in one paragraph
 
 Single-player **Live** mode works end to end on NEAR testnet: a player gets

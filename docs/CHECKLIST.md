@@ -21,7 +21,7 @@ Deadline 2026-11-14 23:59 UTC. Testnet only (user decision). `[x]` only when ver
 - [x] Redeployed with `migrate` (tx 7ooWKBU5…), balances + vault kept; 30 contract tests pass
 - [x] README discloses: house bot moves pool 0, front-running window, owner powers, storage, faucet
 - [ ] Storage deposits for players (documented as known limitation instead)
-- [ ] Re-run `bun run verify` on v3
+- [x] Re-run `bun run verify` on v3 → `verify: OK` (place ELNg2raZ…, settle 6EZCiAPQ…)
 
 ## 3. NEAR Intents
 - [x] Decision: testnet only → not used; README + deck say so and name it as the mainnet path
@@ -29,13 +29,14 @@ Deadline 2026-11-14 23:59 UTC. Testnet only (user decision). `[x]` only when ver
 ## 4. Global leaderboard
 - [x] Contract: per-player cash P&L, trades, wins, best multiplier; `leaders()`, `stats()`
 - [x] UI: 🏆 sheet, your row highlighted
-- [ ] Verified populated on testnet (fills on the next cash settles)
+- [x] Verified populated on testnet (`leaders()` returns ranked rows)
 
 ## 5. Multiplayer / tournament
 - [x] Contract: create/join/settle_tourney (50/30/20, ties split, <2 refund, late join rejected, bets end before bell); 5 tests
 - [x] Engine: settles tournaments at the bell
 - [x] UI: ⚔ sheet (create, open list), `/?t=<id>` link, lobby banner + Join + copy link, live rank + countdown, standings, results
-- [ ] Verified end-to-end with 2 browsers on testnet (running)
+- [x] Verified end-to-end with 2 browsers on testnet: tournament #2, $1 entry, both played, engine settled at the bell, tie split $1/$1
+- [x] Browser RPC failover (fastnear 429s have no CORS header); 4/4 drops placed after
 
 ## 6. Onboarding
 - [x] First-run 3-step sheet (bird = price, shape the pipe, Drop), skippable, ends in guest / wallet / demo
